@@ -119,6 +119,9 @@ class YT8MAggregatedFeatureReader(BaseReader):
     for feature_index in range(num_features):
       feature_map[self.feature_names[feature_index]] = tf.FixedLenFeature(
           [self.feature_sizes[feature_index]], tf.float32)
+    # added by Sophie, equivalent with previous for loop
+    # for feature, feature_size in zip(self.feature_names, self.feature_sizes):
+    #     feature_map[feature] = tf.FixedLenFeature([feature_size], tf.float32)
 
     features = tf.parse_example(serialized_examples, features=feature_map)
 
