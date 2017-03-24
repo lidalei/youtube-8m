@@ -144,25 +144,44 @@ def get_input_data_tensors(reader,
     num_readers: How many I/O threads to use.
 
     Returns:
-    A tuple containing the features tensor, labels tensor, and optionally a
+    A tuple containing the video ids tensor, features tensor, labels tensor, and optionally a
     tensor containing the number of frames per video. The exact dimensions
     depend on the reader being used.
 
     Raises:
     IOError: If no files matching the given pattern were found.
     """
-    logging.info("Using batch size of " + str(batch_size) + " for training.")
+    logging.info("Using batch size of {} for training.".format(batch_size))
     with tf.name_scope("train_input"):
+        # tf.train.match_filenames_once returns a tf variable.
+        # tf.gfile.Glob(FLAGS.file_pattern) returns the list of files (dirs) matched.
         files = gfile.Glob(data_pattern)
         if not files:
             raise IOError("Unable to find training files. data_pattern='{}'.".format(data_pattern))
         logging.info("Number of training files: {}.".format(len(files)))
-        filename_queue = tf.train.string_input_producer(
-            files, num_epochs=num_epochs, shuffle=True)
-        training_data = [
-            reader.prepare_reader(filename_queue) for _ in range(num_readers)
-            ]
+        # Create a file name queue with randomly shuffled orders.
+        filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=True)
+        # list of (video_ids, features, labels, padding)
+        training_data = [reader.prepare_reader(filename_queue) for _ in range(num_readers)]
 
+        """
+
+        min_after_dequeue: Minimum number elements in the queue after a dequeue,
+        used to ensure a level of mixing of elements.
+
+        allow_smaller_final_batch: If True, allow the final batch to be smaller
+        if there are insufficient items left in the queue.
+
+        If enqueue_many is False, each tensors_list[i] is assumed to represent a single example.
+        An input tensor with shape [x, y, z] will be output as a tensor with shape [batch_size, x, y, z].
+
+        If enqueue_many is True, tensors_list[i] is assumed to represent a batch of examples,
+        where the first dimension is indexed by example, and all members of tensors_list[i] should
+        have the same size in the first dimension. If an input tensor has shape [*, x, y, z],
+        the output will have shape [batch_size, x, y, z].
+        """
+        # Returns a tensor with shape [None, ], where None represents the actual batch_size is not fixed.
+        # Any graph that assumes fixed batch_size will fail.
         return tf.train.shuffle_batch_join(
             training_data,
             batch_size=batch_size,
@@ -175,7 +194,7 @@ def get_input_data_tensors(reader,
 def find_class_by_name(name, modules):
     """Searches the provided modules for the named class and returns it."""
     modules = [getattr(module, name, None) for module in modules]
-    # if None === False, added by Sophie.
+    # (if None) === False, added by Sophie.
     # (e for e in iterable) returns a generator, which doesn't generate elements until being invoked.
     # return next(a for a in modules if a is not None)
     return next(a for a in modules if a)
@@ -196,30 +215,33 @@ def build_graph(reader,
                 num_epochs=None):
     """Creates the Tensorflow graph.
 
-  This will only be called once in the life of
-  a training model, because after the graph is created the model will be
-  restored from a meta graph file rather than being recreated.
+      This will only be called once in the life of
+      a training model, because after the graph is created the model will be
+      restored from a meta graph file rather than being recreated.
 
-  Args:
-    reader: The data file reader. It should inherit from BaseReader.
-    model: The core model (e.g. logistic or neural net). It should inherit
-           from BaseModel.
-    train_data_pattern: glob path to the training data files.
-    label_loss_fn: What kind of loss to apply to the model. It should inherit
-                from BaseLoss.
-    batch_size: How many examples to process at a time.
-    base_learning_rate: What learning rate to initialize the optimizer with.
-    optimizer_class: Which optimization algorithm to use.
-    clip_gradient_norm: Magnitude of the gradient to clip to.
-    regularization_penalty: How much weight to give the regularization loss
-                            compared to the label loss.
-    num_readers: How many threads to use for I/O operations.
-    num_epochs: How many passes to make over the data. 'None' means an
-                unlimited number of passes.
-  """
+      Args:
+        reader: The data file reader. It should inherit from BaseReader.
+        model: The core model (e.g. logistic or neural net). It should inherit from BaseModel.
+        train_data_pattern: glob path to the training data files.
+        label_loss_fn: What kind of loss to apply to the model. It should inherit
+                    from BaseLoss.
+        batch_size: How many examples to process at a time.
+        base_learning_rate: What learning rate to initialize the optimizer with.
+        optimizer_class: Which optimization algorithm to use.
+        clip_gradient_norm: Magnitude of the gradient to clip to.
+        regularization_penalty: How much weight to give the regularization loss
+                                compared to the label loss.
+        num_readers: How many threads to use for I/O operations.
+        num_epochs: How many passes to make over the data. 'None' means an
+                    unlimited number of passes.
+      """
 
     global_step = tf.Variable(0, trainable=False, name="global_step")
 
+    # exponential_decay(learning_rate, global_step, decay_steps, decay_rate, staircase=False, name=None).
+    # decayed_learning_rate = learning_rate * decay_rate ^ (global_step / decay_steps).
+    # Treat gradient descent as stochastic gradient descent using global_step = global_step (batch) * batch_size.
+    # staircase=True decays the learning rate at discrete intervals.
     learning_rate = tf.train.exponential_decay(
         base_learning_rate,
         global_step * batch_size,
@@ -228,7 +250,10 @@ def build_graph(reader,
         staircase=True)
     tf.summary.scalar('learning_rate', learning_rate)
 
+    # create optimizer with decayed learning rate.
     optimizer = optimizer_class(learning_rate)
+
+    # num_frames = [1, 1, ..., 1] whose shape is [batch_size].
     unused_video_id, model_input_raw, labels_batch, num_frames = (
         get_input_data_tensors(
             reader,
@@ -238,10 +263,12 @@ def build_graph(reader,
             num_epochs=num_epochs))
     tf.summary.histogram("model/input_raw", model_input_raw)
 
+    # dimension of features, starting from zero, thus minus 1.
     feature_dim = len(model_input_raw.get_shape()) - 1
-
+    # When making predictions (export_model.py), normalization is used, too.
+    # normalize the features (the feature_dim, i.e., the last dimension) of each instance.
     model_input = tf.nn.l2_normalize(model_input_raw, feature_dim)
-
+    # TODO
     with tf.name_scope("model"):
         result = model.create_model(
             model_input,
@@ -330,8 +357,9 @@ class Trainer(object):
 
         # StandardError only exists in Python 2, added by Sophie
         # The reason why is_master is False is task.index > 0.
-        if self.is_master and self.task.index > 0:
-            raise StandardError("{}: Only one replica of master expected".format(task_as_string(self.task)))
+        # This is useless. Always False.
+        # if self.is_master and self.task.index > 0:
+        #     raise StandardError("{}: Only one replica of master expected".format(task_as_string(self.task)))
 
     def run(self, start_new_model=False):
         """Performs training on the currently defined Tensorflow graph.
@@ -341,15 +369,17 @@ class Trainer(object):
         """
         if self.is_master and start_new_model:
             # Training process is only recorded in master node.
+            # Remove training directory. The function invoked will handle non-existing case.
             self.remove_training_directory(self.train_dir)
 
         target, device_fn = self.start_server_if_distributed()
-
+        # The full path to the latest checkpoint or None if no checkpoint was found or start_new_model or ....
         meta_filename = self.get_meta_filename(start_new_model, self.train_dir)
 
         with tf.Graph().as_default() as graph:
 
             if meta_filename:
+                # TODO
                 saver = self.recover_model(meta_filename)
 
             with tf.device(device_fn):
@@ -364,6 +394,10 @@ class Trainer(object):
                 train_op = tf.get_collection("train_op")[0]
                 init_op = tf.global_variables_initializer()
 
+        # A training helper that checkpoints models and computes summaries.
+        # Supervisor is a small wrapper around a Coordinator, a Saver, and a SessionManager
+        # that takes care of common needs of TensorFlow training programs.
+        # https://www.tensorflow.org/programmers_guide/supervisor
         sv = tf.train.Supervisor(
             graph,
             logdir=self.train_dir,
@@ -374,7 +408,8 @@ class Trainer(object):
             save_summaries_secs=120,
             saver=saver)
 
-        logging.info("%s: Starting managed session.", task_as_string(self.task))
+        logging.info("{}: Starting managed session.".format(task_as_string(self.task)))
+        # Get a TensorFlow session managed by the supervisor.
         with sv.managed_session(target, config=self.config) as sess:
 
             try:
@@ -456,13 +491,15 @@ class Trainer(object):
         """Starts a server if the execution is distributed."""
 
         if self.cluster:
-            logging.info("{}: Starting trainer within cluster {}.".format(
-                         task_as_string(self.task), self.cluster.as_dict()))
+            logging.info("{}: Starting trainer within cluster {}.".format(task_as_string(self.task),
+                                                                          self.cluster.as_dict()))
+            # start a new server
             server = start_server(self.cluster, self.task)
             target = server.target
             device_fn = tf.train.replica_device_setter(
                 ps_device="/job:ps",
-                worker_device="/job:{}/task:{}".format((self.task.type, self.task.index)),
+                # "/job:{}/task:{}".format((self.task.type, self.task.index))
+                worker_device=task_as_string(self.task),
                 cluster=self.cluster)
         else:
             target = ""
@@ -471,41 +508,55 @@ class Trainer(object):
 
     def remove_training_directory(self, train_dir):
         """Removes the training directory."""
-        try:
-            logging.info("{}: Removing existing train directory.".format(task_as_string(self.task)))
-            gfile.DeleteRecursively(train_dir)
-        except:
-            logging.error(
-                "{}: Failed to delete directory {} when starting a new model."
-                .format(task_as_string(self.task), train_dir) + " Please delete it manually and try again.")
+        if tf.gfile.Exists(train_dir):
+            try:
+                logging.info("{}: Removing existing train dir.".format(task_as_string(self.task)))
+                gfile.DeleteRecursively(train_dir)
+            except:
+                logging.error(
+                    "{}: Failed to delete dir {} when starting a new model. Delete it manually and try again.".format(
+                        task_as_string(self.task), train_dir))
 
     def get_meta_filename(self, start_new_model, train_dir):
+        task_str = task_as_string(self.task)
+
         if start_new_model:
-            logging.info("{}: Flag 'start_new_model' is set. Building a new model.".format(task_as_string(self.task)))
+            logging.info("{}: Flag 'start_new_model' is set. Building a new model.".format(task_str))
             return None
 
+        """
+        Finds the filename of latest saved checkpoint file.
+        Returns: The FULL path to the latest checkpoint or None if no checkpoint was found.
+        """
         latest_checkpoint = tf.train.latest_checkpoint(train_dir)
         if not latest_checkpoint:
-            logging.info("{}: No checkpoint file found. Building a new model.".format(task_as_string(self.task)))
+            logging.info("{}: No checkpoint file found. Building a new model.".format(task_str))
             return None
 
         meta_filename = latest_checkpoint + ".meta"
         if not gfile.Exists(meta_filename):
-            logging.info("{}: No meta graph file found. Building a new model.".format(task_as_string(self.task)))
+            logging.info("{}: No meta graph file found. Building a new model.".format(task_str))
             return None
         else:
             return meta_filename
 
     def recover_model(self, meta_filename):
         logging.info("{}: Restoring from meta graph file {}".format(task_as_string(self.task), meta_filename))
+        # import_meta_graph returns A saver constructed from saver_def in MetaGraphDef or None.
+        # A None value is returned if no variables exist in the MetaGraphDef (i.e., there are no variables to restore).
+        # Call saver.restore(sess, 'full/path/to/meta_filename_without_suffix').
         return tf.train.import_meta_graph(meta_filename)
 
     def build_model(self, model, reader):
-        """Find the model and build the graph."""
+        """
+        Find the model and build the graph.
+        Returns a saver, keeping all checkpoints that are generated every 15 minutes.
+        """
 
         label_loss_fn = find_class_by_name(FLAGS.label_loss, [losses])()
         optimizer_class = find_class_by_name(FLAGS.optimizer, [tf.train])
 
+        # TODO
         build_graph(reader=reader,
                     model=model,
                     optimizer_class=optimizer_class,
@@ -549,11 +600,11 @@ class ParameterServer(object):
     def __init__(self, cluster, task):
         """Creates a ParameterServer.
 
-    Args:
-      cluster: A tf.train.ClusterSpec if the execution is distributed.
-        None otherwise.
-      task: A TaskSpec describing the job type and the task index.
-    """
+        Args:
+          cluster: A tf.train.ClusterSpec if the execution is distributed.
+            None otherwise.
+          task: A TaskSpec describing the job type and the task index.
+        """
 
         self.cluster = cluster
         self.task = task
@@ -561,8 +612,8 @@ class ParameterServer(object):
     def run(self):
         """Starts the parameter server."""
 
-        logging.info("%s: Starting parameter server within cluster %s.",
-                     task_as_string(self.task), self.cluster.as_dict())
+        logging.info("{}: Starting parameter server within cluster {}.".format(task_as_string(self.task),
+                                                                               self.cluster.as_dict()))
         server = start_server(self.cluster, self.task)
         server.join()
 
@@ -581,7 +632,14 @@ def start_server(cluster, task):
     if task.index is None:
         raise ValueError("{}: The task index must be specified.".format(task_as_string(task)))
 
-    # Create and start a server.
+    """
+    An in-process TensorFlow server, for use in distributed training.
+    A tf.train.Server instance encapsulates a set of devices and a tf.Session target
+    that can participate in distributed training. A server belongs to a cluster (specified by a tf.train.ClusterSpec),
+    and corresponds to a particular task in a named job.
+    The server can communicate with any other server in the same cluster.
+    """
+    # Create and start a server immediately.
     return tf.train.Server(
         tf.train.ClusterSpec(cluster),
         protocol="grpc",
@@ -590,6 +648,11 @@ def start_server(cluster, task):
 
 
 def task_as_string(task):
+    """
+    Similar to toString in Java.
+    :param task: {type:'', index: int}
+    :return: a string, the path to this task.
+    """
     return "/job:{}/task:{}".format(task.type, task.index)
 
 
@@ -602,11 +665,13 @@ def main(unused_argv):
     cluster = tf.train.ClusterSpec(cluster_data) if cluster_data else None
 
     # Load the task data from the environment.
+    # A task is described with a type and an index.
     task_data = env.get("task", None) or {"type": "master", "index": 0}
-    # Create a new type.
+    # Create a new type. Its names is 'TaskSpec', inherits from object, and has two members, type and index.
+    # Equivalent form, class TaskSpec(object):    type='master'    index=0.
     task = type("TaskSpec", (object,), task_data)
 
-    # Logging the version.
+    # Tensorflow logging level. DEBUG, INFO, WARN (default), ERROR, FATAL. Right after import.
     logging.set_verbosity(tf.logging.INFO)
     logging.info("{}: Tensorflow version: {}.".format(task_as_string(task), tf.__version__))
 
@@ -617,6 +682,7 @@ def main(unused_argv):
         # get train / validate / test reader to access data stored in tfrecords files.
         reader = get_reader()
         # FLAGS.frame_features, True represents using frame level features.
+        # Export models for future prediction (and evaluation).
         model_exporter = export_model.ModelExporter(frame_features=FLAGS.frame_features, model=model, reader=reader)
 
         Trainer(cluster, task, FLAGS.train_dir, model, reader, model_exporter,
@@ -624,6 +690,7 @@ def main(unused_argv):
                 FLAGS.export_model_steps).run(start_new_model=FLAGS.start_new_model)
 
     elif task.type == "ps":
+        # ps, abbr. of ParameterServer.
         ParameterServer(cluster, task).run()
 
     else:
