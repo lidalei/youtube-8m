@@ -32,32 +32,36 @@ class ModelExporter(object):
         self.model = model
         self.reader = reader
 
+        # Constructing and making default
         with tf.Graph().as_default() as graph:
             self.inputs, self.outputs = self.build_inputs_and_outputs()
             self.graph = graph
+            # save trainable variables only. Added by Sophie.
             self.saver = tf.train.Saver(tf.trainable_variables(), sharded=True)
 
     def export_model(self, model_dir, global_step_val, last_checkpoint):
         """Exports the model so that it can used for batch predictions."""
         with self.graph.as_default():
-                with tf.Session() as session:
-                    session.run(tf.global_variables_initializer())
-                    self.saver.restore(session, last_checkpoint)
+            with tf.Session() as session:
+                # initialize all global variables.
+                session.run(tf.global_variables_initializer())
+                # restore from last checkpoint.
+                self.saver.restore(session, last_checkpoint)
 
-                    signature = signature_def_utils.build_signature_def(
-                        inputs=self.inputs,
-                        outputs=self.outputs,
-                        method_name=signature_constants.PREDICT_METHOD_NAME)
+                signature = signature_def_utils.build_signature_def(
+                    inputs=self.inputs,
+                    outputs=self.outputs,
+                    method_name=signature_constants.PREDICT_METHOD_NAME)
 
-                    signature_map = {signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY:
-                                     signature}
+                signature_map = {signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY:
+                                 signature}
 
-                    model_builder = saved_model_builder.SavedModelBuilder(model_dir)
-                    model_builder.add_meta_graph_and_variables(session,
-                        tags=[tag_constants.SERVING],
-                        signature_def_map=signature_map,
-                        clear_devices=True)
-                    model_builder.save()
+                model_builder = saved_model_builder.SavedModelBuilder(model_dir)
+                model_builder.add_meta_graph_and_variables(session,
+                                                           tags=[tag_constants.SERVING],
+                                                           signature_def_map=signature_map,
+                                                           clear_devices=True)
+                model_builder.save()
 
     def build_prediction_graph(self, serialized_examples):
         """
@@ -70,9 +74,10 @@ class ModelExporter(object):
             self.reader.prepare_serialized_examples(serialized_examples))
 
         # dimension starts from 0. Added by Sophie.
+        # The last dimension is the feature dimension.
         feature_dim = len(model_input_raw.get_shape()) - 1
         # normalize the features of each instance
-        model_input = tf.nn.l2_normalize(model_input_raw, feature_dim)
+        model_input = tf.nn.l2_normalize(model_input_raw, dim=feature_dim)
 
         with tf.name_scope("model"):
             # invoke the create_model method of model class.
@@ -84,6 +89,7 @@ class ModelExporter(object):
               is_training=False)
 
             for variable in slim.get_model_variables():
+                # summarize histograms of this variable.
                 tf.summary.histogram(variable.op.name, variable)
 
             predictions = result["predictions"]
@@ -93,21 +99,19 @@ class ModelExporter(object):
         return video_id, top_indices, top_predictions
 
     def build_inputs_and_outputs(self):
+        # Each example is a string. shape(serialized_examples) = [batch_size]
+        serialized_examples = tf.placeholder(tf.string, shape=(None,))
 
         if self.frame_features:
-            # frame-level features
-            serialized_examples = tf.placeholder(tf.string, shape=(None,))
-
+            # frame-level features.
             # fn = lambda x: self.build_prediction_graph(x)
             # change fn to function directly. Added by Sophie.
             video_id_output, top_indices_output, top_predictions_output = (
-              tf.map_fn(self.build_prediction_graph, serialized_examples,
-                        dtype=(tf.string, tf.int32, tf.float32)))
+                tf.map_fn(self.build_prediction_graph, serialized_examples,
+                          dtype=(tf.string, tf.int32, tf.float32)))
 
         else:
             # video-level features
-            serialized_examples = tf.placeholder(tf.string, shape=(None,))
-
             video_id_output, top_indices_output, top_predictions_output = (
               self.build_prediction_graph(serialized_examples))
 
