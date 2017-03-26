@@ -253,6 +253,7 @@ def build_graph(reader,
     # create optimizer with decayed learning rate.
     optimizer = optimizer_class(learning_rate)
 
+    # Get training data.
     # num_frames = [1, 1, ..., 1] whose shape is [batch_size].
     unused_video_id, model_input_raw, labels_batch, num_frames = (
         get_input_data_tensors(
@@ -268,8 +269,9 @@ def build_graph(reader,
     # When making predictions (export_model.py), normalization is used, too.
     # normalize the features (the feature_dim, i.e., the last dimension) of each instance.
     model_input = tf.nn.l2_normalize(model_input_raw, feature_dim)
-    # TODO
+
     with tf.name_scope("model"):
+        # result is model output, batch_size * num_classes.
         result = model.create_model(
             model_input,
             num_frames=num_frames,
@@ -279,6 +281,7 @@ def build_graph(reader,
         for variable in slim.get_model_variables():
             tf.summary.histogram(variable.op.name, variable)
 
+        # Compute prediction loss.
         predictions = result["predictions"]
         if "loss" in result.keys():
             label_loss = result["loss"]
@@ -290,9 +293,10 @@ def build_graph(reader,
             reg_loss = result["regularization_loss"]
         else:
             reg_loss = tf.constant(0.0)
-
+        # reg_losses is a list of loss variables.
         reg_losses = tf.losses.get_regularization_losses()
         if reg_losses:
+            # add_n adds all input tensors element-wise.
             reg_loss += tf.add_n(reg_losses)
 
         if regularization_penalty != 0:
@@ -300,6 +304,7 @@ def build_graph(reader,
 
         # Adds update_ops (e.g., moving average updates in batch normalization) as
         # a dependency to the train_op.
+        # TODO, not understand.
         update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
         if "update_ops" in result.keys():
             update_ops += result["update_ops"]
@@ -311,6 +316,7 @@ def build_graph(reader,
 
         # Incorporate the L2 weight penalties etc.
         final_loss = regularization_penalty * reg_loss + label_loss
+        # Build training op.
         train_op = slim.learning.create_train_op(
             final_loss,
             optimizer,
@@ -376,14 +382,12 @@ class Trainer(object):
         # The full path to the latest checkpoint or None if no checkpoint was found or start_new_model or ....
         meta_filename = self.get_meta_filename(start_new_model, self.train_dir)
 
+        # Recover graph or build a new one.
         with tf.Graph().as_default() as graph:
-
             if meta_filename:
-                # TODO
                 saver = self.recover_model(meta_filename)
 
             with tf.device(device_fn):
-
                 if not meta_filename:
                     saver = self.build_model(self.model, self.reader)
 
@@ -408,52 +412,50 @@ class Trainer(object):
             save_summaries_secs=120,
             saver=saver)
 
-        logging.info("{}: Starting managed session.".format(task_as_string(self.task)))
+        task_str = task_as_string(self.task)
+        logging.info("{}: Starting managed session.".format(task_str))
+
         # Get a TensorFlow session managed by the supervisor.
         with sv.managed_session(target, config=self.config) as sess:
 
             try:
-                logging.info("%s: Entering training loop.", task_as_string(self.task))
+                logging.info("{}: Entering training loop.".format(task_str))
                 while (not sv.should_stop()) and (not self.max_steps_reached):
 
                     batch_start_time = time.time()
+                    # train_op returns None.
                     _, global_step_val, loss_val, predictions_val, labels_val = sess.run(
                         [train_op, global_step, loss, predictions, labels])
                     seconds_per_batch = time.time() - batch_start_time
 
+                    # early stopping.
                     if self.max_steps and self.max_steps <= global_step_val:
                         self.max_steps_reached = True
 
                     if self.is_master:
+                        #
                         examples_per_second = labels_val.shape[0] / seconds_per_batch
-                        hit_at_one = eval_util.calculate_hit_at_one(predictions_val,
-                                                                    labels_val)
-                        perr = eval_util.calculate_precision_at_equal_recall_rate(
-                            predictions_val, labels_val)
+                        hit_at_one = eval_util.calculate_hit_at_one(predictions_val, labels_val)
+                        perr = eval_util.calculate_precision_at_equal_recall_rate(predictions_val, labels_val)
                         gap = eval_util.calculate_gap(predictions_val, labels_val)
 
                         logging.info(
-                            "%s: training step " + str(global_step_val) + "| Hit@1: " +
-                            ("%.2f" % hit_at_one) + " PERR: " + ("%.2f" % perr) + " GAP: " +
-                            ("%.2f" % gap) + " Loss: " + str(loss_val),
-                            task_as_string(self.task))
+                            "{}: training step | Hit@1: {}  PERR: {} GAP: {} Loss: {}".format(
+                                global_step_val, hit_at_one, perr, gap, loss_val), task_str)
 
                         sv.summary_writer.add_summary(
-                            utils.MakeSummary("model/Training_Hit@1", hit_at_one),
-                            global_step_val)
+                            utils.MakeSummary("model/Training_Hit@1", hit_at_one), global_step_val)
                         sv.summary_writer.add_summary(
                             utils.MakeSummary("model/Training_Perr", perr), global_step_val)
                         sv.summary_writer.add_summary(
                             utils.MakeSummary("model/Training_GAP", gap), global_step_val)
                         sv.summary_writer.add_summary(
-                            utils.MakeSummary("global_step/Examples/Second",
-                                              examples_per_second), global_step_val)
+                            utils.MakeSummary("global_step/Examples/Second", examples_per_second), global_step_val)
                         sv.summary_writer.flush()
 
                         # Exporting the model every x steps
                         time_to_export = ((self.last_model_export_step == 0) or
-                                          (global_step_val - self.last_model_export_step
-                                           >= self.export_model_steps))
+                                          (global_step_val - self.last_model_export_step >= self.export_model_steps))
 
                         if self.is_master and time_to_export:
                             self.export_model(global_step_val, sv.saver, sv.save_path, sess)
@@ -464,10 +466,11 @@ class Trainer(object):
                     self.export_model(global_step_val, sv.saver, sv.save_path, sess)
 
             except tf.errors.OutOfRangeError:
-                logging.info("%s: Done training -- epoch limit reached.",
-                             task_as_string(self.task))
+                # Queue does not have enough examples any more, caused by reaching maximal epochs of queue.
+                logging.info("{}: Done training -- epoch limit reached.".format(task_str))
 
-        logging.info("%s: Exited training loop.", task_as_string(self.task))
+        logging.info("{}: Exited training loop.".format(task_str))
+        # Stop supervisor.
         sv.Stop()
 
     def export_model(self, global_step_val, saver, save_path, session):
@@ -476,11 +479,12 @@ class Trainer(object):
         if global_step_val == self.last_model_export_step:
             return
 
+        # save() returns the path at which the variables were saved.
         last_checkpoint = saver.save(session, save_path, global_step_val)
 
-        model_dir = "{0}/export/step_{1}".format(self.train_dir, global_step_val)
-        logging.info("%s: Exporting the model at step %s to %s.",
-                     task_as_string(self.task), global_step_val, model_dir)
+        model_dir = "{}/export/step_{}".format(self.train_dir, global_step_val)
+        logging.info("{}: Exporting the model at step {} to {}.".format(
+            task_as_string(self.task), global_step_val, model_dir))
 
         self.model_exporter.export_model(
             model_dir=model_dir,
@@ -556,7 +560,7 @@ class Trainer(object):
         label_loss_fn = find_class_by_name(FLAGS.label_loss, [losses])()
         optimizer_class = find_class_by_name(FLAGS.optimizer, [tf.train])
 
-        # TODO
+        # Build graph and add essential ops into global collection so that they can be accessed.
         build_graph(reader=reader,
                     model=model,
                     optimizer_class=optimizer_class,
