@@ -178,6 +178,7 @@ class YT8MAggregatedFeatureReader(BaseReader):
         concatenated_features = tf.concat([features[feature_name] for feature_name in self.feature_names], axis=1)
 
         # padding shape is [batch_size], values are [1, 1, ..., 1].
+        # padding represents the number of frames per video. For video-level features, only one pseudo-frame.
         return features["video_id"], concatenated_features, labels, tf.ones([tf.shape(serialized_examples)[0]])
 
 
