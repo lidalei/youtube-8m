@@ -24,7 +24,7 @@ flags.DEFINE_string('feature_sizes', '1024', 'dimensions of features to be used,
 
 flags.DEFINE_integer('batch_size', 8192, 'size of batch processing')
 
-flags.DEFINE_integer('k', 8, 'k-nearest neighbor')
+# flags.DEFINE_integer('k', 8, 'k-nearest neighbor')
 
 
 def get_reader():
@@ -42,7 +42,7 @@ def get_reader():
         raise NotImplementedError('Not supported model type. Supported ones are video and frame.')
 
 
-def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_epochs=1):
+def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_epochs=1, name_scope='input'):
     """Creates the section of the graph which reads the input data.
 
     Similar to the same-name function in train.py.
@@ -52,6 +52,7 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         batch_size: How many examples to process at a time.
         num_readers: How many I/O threads to use.
         num_epochs: How many passed to go through the data files.
+        name_scope: An identifier of this code.
 
     Returns:
         A tuple containing the features tensor, labels tensor, and optionally a
@@ -62,7 +63,7 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         IOError: If no files matching the given pattern were found.
     """
     # Adapted from namesake function in inference.py.
-    with tf.name_scope("input"):
+    with tf.name_scope(name_scope):
         files = gfile.Glob(data_pattern)
         if not files:
             raise IOError("Unable to find input files. data_pattern='{}'".format(data_pattern))
@@ -138,25 +139,24 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1, verbosity=False):
     return sum_labels_val, accum_num_videos_val, labels_prior_prob_val
 
 
-def find_k_nearest_neighbors(video_id_batch, video_batch, video_labels_batch, reader, data_pattern, k=3,
-                             verbosity=True):
+def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, k=3, verbosity=True):
     """
     Return k-nearest neighbors. https://www.tensorflow.org/programmers_guide/reading_data.
-    :param video_id_batch:
-    :param video_batch:
-    :param video_labels_batch:
+    :param video_id_batch: Must be a value.
+    :param video_batch: Must be a value.
     :param reader:
     :param data_pattern:
     :param k:
+    :param verbosity:
     :return: k-nearest videos, representing by (video_ids, video_labels)
     """
 
     # Generate example queue. Traverse the queue to traverse the dataset.
     # Works as the inner loop of finding k-nearest neighbors.
     video_id_batch_inner, video_batch_inner, video_labels_batch_inner, num_frames_batch_inner = get_input_data_tensors(
-        reader=reader, data_pattern=data_pattern, batch_size=8192, num_readers=1, num_epochs=1)
+        reader=reader, data_pattern=data_pattern, batch_size=8192, num_readers=1, num_epochs=1, name_scope='inner_loop')
 
-    # batch_size = int(video_id_batch.get_shape()[0]). Wrong expression, for Tensor doesn't have values until evaluated.
+    # batch_size = int(video_id_batch.shape[0])
     # Define variables representing k nearest video_ids, video_labels and video_similarities.
     topk_video_ids = None  # batch_size * [[]]
     # Variable-length labels.
@@ -171,7 +171,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, video_labels_batch, re
     sess.run(init_op)
 
     # normalization
-    feature_dim = len(video_batch.get_shape()) - 1
+    feature_dim = len(video_batch.shape) - 1
 
     video_batch_normalized = tf.nn.l2_normalize(video_batch, feature_dim)
     video_batch_inner_normalized = tf.nn.l2_normalize(video_batch_inner, feature_dim)
@@ -190,8 +190,8 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, video_labels_batch, re
     try:
         while not coord.should_stop():
             # Run results are numpy arrays.
-            video_id_batch_val, video_id_batch_inner_val, video_labels_batch_inner_val, batch_topk_sims, batch_topk_sim_indices = sess.run(
-                [video_id_batch, video_id_batch_inner, video_labels_batch_inner, values, indices])
+            video_id_batch_inner_val, video_labels_batch_inner_val, batch_topk_sims, batch_topk_sim_indices = sess.run(
+                [video_id_batch_inner, video_labels_batch_inner, values, indices])
 
             # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
             # np.stack() can be np.array().
@@ -200,16 +200,16 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, video_labels_batch, re
 
             if verbosity:
                 # Debug mode.
-                print('video_id_batch: {}'.format(video_id_batch_val))
+                print('video_id_batch: {}'.format(video_id_batch))
                 print('batch_topk_sims: {}\n batch_topk_sim_indices: {}'.format(batch_topk_sims,
                                                                                 batch_topk_sim_indices))
                 print('batch_topk_video_ids: {}\n batch_topk_video_labels: {}'.format(batch_topk_video_ids,
                                                                                       batch_topk_video_labels))
-
-                coord.request_stop()
+                # TODO, Debug mode.
+                # coord.request_stop()
 
             # Update top k similar videos.
-            if (not topk_video_ids) or (not topk_video_labels) or (not topk_video_similarities):
+            if (topk_video_ids is None) or (topk_video_labels is None) or (topk_video_similarities is None):
                 # The first batch.
                 topk_video_ids = batch_topk_video_ids
                 topk_video_labels = batch_topk_video_labels
@@ -252,8 +252,40 @@ if __name__ == '__main__':
     """
 
     video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-        reader, FLAGS.train_data_pattern, 10)
+        reader, '/Users/Sophie/Documents/youtube-8m-data/train/trainb1.tfrecord', 10)
+
+    init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    sess = tf.Session()
+
+    sess.run(init_op)
 
     inner_reader = get_reader()
-    find_k_nearest_neighbors(video_id_batch, video_batch, video_labels_batch, inner_reader,
-                             data_pattern=FLAGS.train_data_pattern, k=3)
+
+    # Be cautious to not be blocked by queue.
+    # Start input enqueue threads.
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+    try:
+
+        while not coord.should_stop():
+            # Run training steps or whatever
+            video_id_batch_val, video_batch_val = sess.run([video_id_batch, video_batch])
+            print('video_id_batch_val: {}\n video_batch_val: {}'.format(video_id_batch_val, video_batch_val))
+
+            # Pass values instead of tensors.
+            find_k_nearest_neighbors(video_id_batch_val, video_batch_val, inner_reader,
+                                     data_pattern=FLAGS.train_data_pattern, k=3)
+            # TODO, Debug mode.
+            coord.request_stop()
+
+    except tf.errors.OutOfRangeError:
+        print('Done training -- epoch limit reached')
+    finally:
+        # When done, ask the threads to stop.
+        coord.request_stop()
+
+    # Wait for threads to finish.
+    coord.join(threads)
+    sess.close()
