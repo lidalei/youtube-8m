@@ -4,6 +4,7 @@ import utils
 from tensorflow import flags, gfile, logging
 
 import pickle
+import numpy as np
 
 FLAGS = flags.FLAGS
 
@@ -70,19 +71,19 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=False)
         examples_and_labels = [reader.prepare_reader(filename_queue) for _ in range(num_readers)]
 
-        video_id_batch, video_batch, video_labels, num_frames_batch = (
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
             tf.train.batch_join(examples_and_labels,
                                 batch_size=batch_size,
                                 allow_smaller_final_batch=True,
                                 enqueue_many=True))
-        return video_id_batch, video_batch, video_labels, num_frames_batch
+        return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 
 def compute_prior_posterior_prob():
     pass
 
 
-def compute_prior_prob(reader, data_pattern, smooth_para=1):
+def compute_prior_prob(reader, data_pattern, smooth_para=1, verbosity=False):
     """
     Compute prior probabilities for future use in ml-knn.
     :param reader:
@@ -92,7 +93,7 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1):
     """
     # Generate example queue. Traverse the queue to traverse the dataset.
     video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-            reader=reader, data_pattern=data_pattern, batch_size=8192, num_readers=1, num_epochs=1)
+        reader=reader, data_pattern=data_pattern, batch_size=8192, num_readers=1, num_epochs=1)
 
     num_classes = reader.num_classes
 
@@ -102,7 +103,7 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1):
     sum_labels_onehot_op = sum_labels_onehot.assign_add(tf.reduce_sum(tf.cast(video_labels_batch, tf.float32), axis=0))
     accum_num_videos_op = total_num_videos.assign_add(tf.cast(tf.shape(video_labels_batch)[0], tf.float32))
 
-    compute_labels_prior_prob_op = (smooth_para + sum_labels_onehot) / (smooth_para + total_num_videos)
+    compute_labels_prior_prob_op = (smooth_para + sum_labels_onehot) / (smooth_para * 2 + total_num_videos)
 
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
     sess = tf.Session()
@@ -126,23 +127,24 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1):
     # Wait for threads to finish.
     coord.join(threads)
 
-    labels_prior_prob = sess.run(compute_labels_prior_prob_op)
+    labels_prior_prob_val = sess.run(compute_labels_prior_prob_op)
 
     sess.close()
 
-    print('sum_labels_val: {}, accum_num_videos_val: {}'.format(sum_labels_val, accum_num_videos_val))
-    print('compute_labels_prob: {}'.format(labels_prior_prob))
+    if verbosity:
+        print('sum_labels_val: {}\n accum_num_videos_val: {}'.format(sum_labels_val, accum_num_videos_val))
+        print('compute_labels_prob: {}'.format(labels_prior_prob_val))
 
-    return sum_labels_val, accum_num_videos_val, labels_prior_prob
+    return sum_labels_val, accum_num_videos_val, labels_prior_prob_val
 
 
-
-def find_k_nearest_neighbors(video_id_batch, video_batch, video_labels, reader, data_pattern, k):
+def find_k_nearest_neighbors(video_id_batch, video_batch, video_labels_batch, reader, data_pattern, k=3,
+                             verbosity=True):
     """
     Return k-nearest neighbors. https://www.tensorflow.org/programmers_guide/reading_data.
     :param video_id_batch:
     :param video_batch:
-    :param video_labels:
+    :param video_labels_batch:
     :param reader:
     :param data_pattern:
     :param k:
@@ -150,18 +152,19 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, video_labels, reader, 
     """
 
     # Generate example queue. Traverse the queue to traverse the dataset.
-    video_id_batch_inner, video_batch_inner, video_labels_inner, num_frames_batch_inner = get_input_data_tensors(
+    # Works as the inner loop of finding k-nearest neighbors.
+    video_id_batch_inner, video_batch_inner, video_labels_batch_inner, num_frames_batch_inner = get_input_data_tensors(
         reader=reader, data_pattern=data_pattern, batch_size=8192, num_readers=1, num_epochs=1)
 
-    batch_size = int(video_id_batch.get_shape()[0])
+    # batch_size = int(video_id_batch.get_shape()[0]). Wrong expression, for Tensor doesn't have values until evaluated.
     # Define variables representing k nearest video_ids, video_labels and video_similarities.
-    k_video_ids = None  # batch_size * [[]]
+    topk_video_ids = None  # batch_size * [[]]
     # Variable-length labels.
-    k_video_labels = None  # batch_size * [[]]
-    k_video_similarities = None  # batch_size * [[0.0] * k]
+    topk_video_labels = None  # batch_size * [[]]
+    topk_video_similarities = None  # batch_size * [[0.0] * k]
 
     # Initialization.
-    init_op = tf.global_variables_initializer()
+    init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
     sess = tf.Session()
 
@@ -176,6 +179,8 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, video_labels, reader, 
     # compute cosine similarities
     similarities = tf.matmul(video_batch_normalized, video_batch_inner_normalized, transpose_b=True)
     # top k similar videos per video in video_batch_normalized.
+    # values and indices are in shape [batch_size, k].
+    # TODO, k = k + 1, to avoid the video itself.
     values, indices = tf.nn.top_k(similarities, k=k)
 
     # Start input enqueue threads.
@@ -184,8 +189,34 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, video_labels, reader, 
 
     try:
         while not coord.should_stop():
-            # Run training steps or whatever
-            sess.run(similarities)
+            # Run results are numpy arrays.
+            video_id_batch_val, video_id_batch_inner_val, video_labels_batch_inner_val, batch_topk_sims, batch_topk_sim_indices = sess.run(
+                [video_id_batch, video_id_batch_inner, video_labels_batch_inner, values, indices])
+
+            # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
+            # np.stack() can be np.array().
+            batch_topk_video_ids = np.stack([video_id_batch_inner_val[e] for e in batch_topk_sim_indices])
+            batch_topk_video_labels = np.stack([video_labels_batch_inner_val[e] for e in batch_topk_sim_indices])
+
+            if verbosity:
+                # Debug mode.
+                print('video_id_batch: {}'.format(video_id_batch_val))
+                print('batch_topk_sims: {}\n batch_topk_sim_indices: {}'.format(batch_topk_sims,
+                                                                                batch_topk_sim_indices))
+                print('batch_topk_video_ids: {}\n batch_topk_video_labels: {}'.format(batch_topk_video_ids,
+                                                                                      batch_topk_video_labels))
+
+                coord.request_stop()
+
+            # Update top k similar videos.
+            if (not topk_video_ids) or (not topk_video_labels) or (not topk_video_similarities):
+                # The first batch.
+                topk_video_ids = batch_topk_video_ids
+                topk_video_labels = batch_topk_video_labels
+                topk_video_similarities = batch_topk_sims
+            else:
+                # TODO, Combine batch top k video ids and labels into current top k ids and labels.
+                pass
 
     except tf.errors.OutOfRangeError:
         logging.info('Done the whole dataset.')
@@ -203,6 +234,8 @@ if __name__ == '__main__':
 
     # batch_data = get_input_data_tensors(reader, FLAGS.train_data_pattern)
 
+    """
+    # Compute prior probabilities and store the results.
     sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(reader, FLAGS.train_data_pattern)
 
     with open('sum_labels.pickle', 'wb') as pickle_file:
@@ -216,3 +249,11 @@ if __name__ == '__main__':
     with open('labels_prior_prob.pickle', 'wb') as pickle_file:
         pickle.dump(labels_prior_prob, pickle_file)
     pickle_file.close()
+    """
+
+    video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
+        reader, FLAGS.train_data_pattern, 10)
+
+    inner_reader = get_reader()
+    find_k_nearest_neighbors(video_id_batch, video_batch, video_labels_batch, inner_reader,
+                             data_pattern=FLAGS.train_data_pattern, k=3)
