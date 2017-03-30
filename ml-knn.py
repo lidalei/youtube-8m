@@ -161,7 +161,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     topk_video_ids = None  # batch_size * [[]]
     # Variable-length labels.
     topk_video_labels = None  # batch_size * [[]]
-    topk_video_similarities = None  # batch_size * [[0.0] * k]
+    topk_video_sims = None  # batch_size * [[0.0] * k]
 
     # Initialization.
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -181,7 +181,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     # top k similar videos per video in video_batch_normalized.
     # values and indices are in shape [batch_size, k].
     # TODO, k = k + 1, to avoid the video itself.
-    values, indices = tf.nn.top_k(similarities, k=k)
+    topk_sim_op = tf.nn.top_k(similarities, k=k)
 
     # Start input enqueue threads.
     coord = tf.train.Coordinator()
@@ -190,33 +190,47 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     try:
         while not coord.should_stop():
             # Run results are numpy arrays.
-            video_id_batch_inner_val, video_labels_batch_inner_val, batch_topk_sims, batch_topk_sim_indices = sess.run(
-                [video_id_batch_inner, video_labels_batch_inner, values, indices])
+            video_id_batch_inner_val, video_labels_batch_inner_val, (batch_topk_sims, batch_topk_sim_indices) = sess.run(
+                [video_id_batch_inner, video_labels_batch_inner, topk_sim_op])
 
             # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
             # np.stack() can be np.array().
-            batch_topk_video_ids = np.stack([video_id_batch_inner_val[e] for e in batch_topk_sim_indices])
-            batch_topk_video_labels = np.stack([video_labels_batch_inner_val[e] for e in batch_topk_sim_indices])
+            batch_topk_video_ids = np.stack([video_id_batch_inner_val[ind] for ind in batch_topk_sim_indices])
+            batch_topk_video_labels = np.stack([video_labels_batch_inner_val[ind] for ind in batch_topk_sim_indices])
 
             if verbosity:
                 # Debug mode.
                 print('video_id_batch: {}'.format(video_id_batch))
-                print('batch_topk_sims: {}\n batch_topk_sim_indices: {}'.format(batch_topk_sims,
+                print('batch_topk_sims: {}\nbatch_topk_sim_indices: {}'.format(batch_topk_sims,
                                                                                 batch_topk_sim_indices))
-                print('batch_topk_video_ids: {}\n batch_topk_video_labels: {}'.format(batch_topk_video_ids,
+                print('batch_topk_video_ids: {}\nbatch_topk_video_labels: {}'.format(batch_topk_video_ids,
                                                                                       batch_topk_video_labels))
                 # TODO, Debug mode.
                 # coord.request_stop()
 
             # Update top k similar videos.
-            if (topk_video_ids is None) or (topk_video_labels is None) or (topk_video_similarities is None):
+            if (topk_video_ids is None) or (topk_video_labels is None) or (topk_video_sims is None):
                 # The first batch.
                 topk_video_ids = batch_topk_video_ids
                 topk_video_labels = batch_topk_video_labels
-                topk_video_similarities = batch_topk_sims
+                topk_video_sims = batch_topk_sims
             else:
-                # TODO, Combine batch top k video ids and labels into current top k ids and labels.
-                pass
+                # Combine batch top k video ids and labels into current top k ids and labels.
+                if verbosity:
+                    print('topk_video_ids shape: {}, batch_topk_video_ids shape: {}'.format(topk_video_ids.shape,
+                                                                                        batch_topk_video_ids.shape))
+                top2k_video_ids = np.concatenate((topk_video_ids, batch_topk_video_ids), axis=1)
+                if verbosity:
+                    print('topk_video_labels shape: {}, batch_topk_video_labels shape: {}'.format(
+                        topk_video_labels.shape, batch_topk_video_labels.shape))
+                top_2k_video_labels = np.concatenate((topk_video_labels, batch_topk_video_labels), axis=1)
+                top2k_video_sims = np.concatenate((topk_video_sims, batch_topk_sims), axis=1)
+                # TODO, k=k+1, to exclude the example itself finally.
+                topk_video_sims, topk_video_sims_indices = sess.run(tf.nn.top_k(top2k_video_sims, k=k))
+
+                topk_video_ids = np.stack([top2k_video_ids[i, ind] for i, ind in enumerate(topk_video_sims_indices)])
+                topk_video_labels = np.stack(
+                    [top_2k_video_labels[i, ind] for i, ind in enumerate(topk_video_sims_indices)])
 
     except tf.errors.OutOfRangeError:
         logging.info('Done the whole dataset.')
@@ -227,6 +241,9 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     # Wait for threads to finish.
     coord.join(threads)
     sess.close()
+
+    # TODO, exclude the example itself.
+    return topk_video_ids, topk_video_labels
 
 
 if __name__ == '__main__':
@@ -272,11 +289,15 @@ if __name__ == '__main__':
         while not coord.should_stop():
             # Run training steps or whatever
             video_id_batch_val, video_batch_val = sess.run([video_id_batch, video_batch])
-            print('video_id_batch_val: {}\n video_batch_val: {}'.format(video_id_batch_val, video_batch_val))
+            print('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
 
             # Pass values instead of tensors.
-            find_k_nearest_neighbors(video_id_batch_val, video_batch_val, inner_reader,
-                                     data_pattern=FLAGS.train_data_pattern, k=3)
+            topk_video_ids, topk_video_labels = find_k_nearest_neighbors(video_id_batch_val,
+                                                                         video_batch_val, inner_reader,
+                                                                         data_pattern=FLAGS.train_data_pattern,
+                                                                         k=3, verbosity=False)
+
+            print('topk_video_ids: {}\ntopk_video_labels: {}'.format(topk_video_ids, topk_video_labels))
             # TODO, Debug mode.
             coord.request_stop()
 
