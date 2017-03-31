@@ -62,10 +62,6 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 
-def compute_prior_posterior_prob():
-    pass
-
-
 def compute_prior_prob(reader, data_pattern, smooth_para=1, verbosity=False):
     """
     Compute prior probabilities for future use in ml-knn.
@@ -235,32 +231,89 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     return np.stack(clean_topk_video_ids), np.stack(clean_topk_video_labels)
 
 
+def store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder=''):
+    with open(folder + 'sum_labels.pickle', 'wb') as pickle_file:
+        pickle.dump(sum_labels, pickle_file)
+    pickle_file.close()
+
+    with open(folder + 'accum_num_videos.pickle', 'wb') as pickle_file:
+        pickle.dump(accum_num_videos, pickle_file)
+    pickle_file.close()
+
+    with open(folder + 'labels_prior_prob.pickle', 'wb') as pickle_file:
+        pickle.dump(labels_prior_prob, pickle_file)
+    pickle_file.close()
+
+
+def recover_prior_prob(folder=''):
+    with open(folder + 'sum_labels.pickle', 'rb') as pickle_file:
+        sum_labels = pickle.load(pickle_file)
+    pickle_file.close()
+
+    with open(folder + 'accum_num_videos.pickle', 'rb') as pickle_file:
+        accum_num_videos = pickle.load(pickle_file)
+    pickle_file.close()
+
+    with open(folder + 'labels_prior_prob.pickle', 'rb') as pickle_file:
+        labels_prior_prob = pickle.load(pickle_file)
+    pickle_file.close()
+
+    return sum_labels, accum_num_videos, labels_prior_prob
+
+
+def store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, folder=''):
+    with open(folder + 'count_{}.pickle'.format(k), 'wb') as pickle_file:
+        pickle.dump(count, pickle_file)
+    pickle_file.close()
+
+    with open(folder + 'counter_count_{}.pickle'.format(k), 'wb') as pickle_file:
+        pickle.dump(counter_count, pickle_file)
+    pickle_file.close()
+
+    with open('pos_prob_positive_{}.pickle'.format(k), 'wb') as pickle_file:
+        pickle.dump(pos_prob_positive, pickle_file)
+    pickle_file.close()
+
+    with open('pos_prob_negative_{}.pickle'.format(k), 'wb') as pickle_file:
+        pickle.dump(pos_prob_negative, pickle_file)
+    pickle_file.close()
+
+
+def recover_posterior_prob(k, folder=''):
+    with open(folder + 'count_{}.pickle'.format(k), 'rb') as pickle_file:
+        count = pickle.load(pickle_file)
+    pickle_file.close()
+
+    with open(folder + 'counter_count_{}.pickle'.format(k), 'rb') as pickle_file:
+        counter_count = pickle.load(pickle_file)
+    pickle_file.close()
+
+    with open('pos_prob_positive_{}.pickle'.format(k), 'rb') as pickle_file:
+        pos_prob_positive = pickle.load(pickle_file)
+    pickle_file.close()
+
+    with open('pos_prob_negative_{}.pickle'.format(k), 'rb') as pickle_file:
+        pos_prob_negative = pickle.load(pickle_file)
+    pickle_file.close()
+
+    return count, counter_count, pos_prob_positive, pos_prob_negative
+
+
 def main(unused_argv):
     k = FLAGS.k
     smooth_para = FLAGS.smooth_para
     train_data_pattern = FLAGS.train_data_pattern
     verbosity = FLAGS.verbosity
-    reader = get_reader()
+    outpur_dir = FLAGS.output_dir
 
-    # batch_data = get_input_data_tensors(reader, train_data_pattern)
+    reader = get_reader()
 
     """
     # Compute prior probabilities and store the results.
-    sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(reader, train_data_pattern,
-                                                                         smooth_para)
-
-    with open('sum_labels.pickle', 'wb') as pickle_file:
-        pickle.dump(sum_labels, pickle_file)
-    pickle_file.close()
-
-    with open('accum_num_videos.pickle', 'wb') as pickle_file:
-        pickle.dump(accum_num_videos, pickle_file)
-    pickle_file.close()
-
-    with open('labels_prior_prob.pickle', 'wb') as pickle_file:
-        pickle.dump(labels_prior_prob, pickle_file)
-    pickle_file.close()
+    sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(reader, train_data_pattern, smooth_para)
+    store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, outpur_dir)
     """
+
     # Total number of classes.
     num_classes = reader.num_classes
     range_num_classes = range(num_classes)
@@ -330,27 +383,12 @@ def main(unused_argv):
     # Wait for threads to finish.
     coord.join(threads)
 
-    # Write to files for future use.
-    with open('count_{}.pickle'.format(k), 'wb') as pickle_file:
-        pickle.dump(count, pickle_file)
-    pickle_file.close()
-
-    with open('counter_count_{}.pickle'.format(k), 'wb') as pickle_file:
-        pickle.dump(counter_count, pickle_file)
-    pickle_file.close()
-
     # Compute posterior probabilities.
     pos_prob_positive = (smooth_para + count) / (smooth_para * (k + 1) + count.sum(axis=0))
     pos_prob_negative = (smooth_para + counter_count) / (smooth_para * (k + 1) + counter_count.sum(axis=0))
 
     # Write to files for future use.
-    with open('pos_prob_positive_{}.pickle'.format(k), 'wb') as pickle_file:
-        pickle.dump(pos_prob_positive, pickle_file)
-    pickle_file.close()
-
-    with open('pos_prob_negative_{}.pickle'.format(k), 'wb') as pickle_file:
-        pickle.dump(pos_prob_negative, pickle_file)
-    pickle_file.close()
+    store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, outpur_dir)
 
     sess.close()
 
@@ -376,5 +414,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('smooth_para', 1.0, 'smooth parameter, default as 1.0')
 
     flags.DEFINE_boolean('verbosity', False, 'whether print intermediate results, default no.')
+
+    flags.DEFINE_string('output_dir', '', 'output directory')
 
     app.run()
