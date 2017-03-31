@@ -341,6 +341,8 @@ def main(unused_argv):
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
+    processing_count, num_examples_processed = 0, 0
+
     try:
 
         while not coord.should_stop():
@@ -374,6 +376,11 @@ def main(unused_argv):
             # TODO, Debug mode.
             # coord.request_stop()
 
+            processing_count += 1
+            num_examples_processed += video_id_batch_val.shape[0]
+            print('Batch processing steps: {}, total number of examples processed: {}'.format(processing_count,
+                                                                                              num_examples_processed))
+
     except tf.errors.OutOfRangeError:
         logging.info('Done training -- epoch limit reached')
     finally:
@@ -397,7 +404,7 @@ if __name__ == '__main__':
 
     # TODO, change according to running environment. Set as '' to be passed in python running command.
     flags.DEFINE_string(
-        "train_data_pattern", "/Users/Sophie/Documents/youtube-8m-data/train/train*.tfrecord",
+        "train_data_pattern", "/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord",
         "File glob for the training dataset. If the files refer to Frame Level "
         "features (i.e. tensorflow.SequenceExample), then set --reader_type "
         "format. The (Sequence)Examples are expected to have 'rgb' byte array "
