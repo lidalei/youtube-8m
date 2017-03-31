@@ -1,7 +1,10 @@
 import tensorflow as tf
+import time
+
 import readers
 import utils
 from tensorflow import flags, gfile, logging, app
+from inference import format_lines
 
 import pickle
 import numpy as np
@@ -299,20 +302,22 @@ def recover_posterior_prob(k, folder=''):
     return count, counter_count, pos_prob_positive, pos_prob_negative
 
 
-def main(unused_argv):
-    k = FLAGS.k
-    smooth_para = FLAGS.smooth_para
-    train_data_pattern = FLAGS.train_data_pattern
+def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
+    train_data_pattern = '/Users/Sophie/Documents/youtube-8m-data/train/trainaW.tfrecord' \
+        if debug else FLAGS.train_data_pattern
+
     verbosity = FLAGS.verbosity
-    outpur_dir = FLAGS.output_dir
+    output_dir = FLAGS.output_dir
 
     reader = get_reader()
 
+    # Step 1. Compute prior probabilities and store the results.
     """
-    # Compute prior probabilities and store the results.
     sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(reader, train_data_pattern, smooth_para)
-    store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, outpur_dir)
+    store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, output_dir)
     """
+
+    # Step 2. Compute posterior probabilities, actually likelihood function or sampling distribution.
 
     # Total number of classes.
     num_classes = reader.num_classes
@@ -324,7 +329,7 @@ def main(unused_argv):
     count = np.zeros([k + 1, num_classes], dtype=np.float32)
     counter_count = np.zeros([k + 1, num_classes], dtype=np.float32)
 
-    # TODO, change to whole dataset. For test, use a single tfrecord file.
+    # For debug, use a single tfrecord file (debug mode).
     video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
         reader, train_data_pattern, 8192)
 
@@ -350,7 +355,7 @@ def main(unused_argv):
             video_id_batch_val, video_batch_val, video_labels_batch_val = sess.run(
                 [video_id_batch, video_batch, video_labels_batch])
 
-            if verbosity:
+            if debug or verbosity:
                 print('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
 
             # Pass values instead of tensors.
@@ -359,7 +364,7 @@ def main(unused_argv):
                                                                          data_pattern=train_data_pattern,
                                                                          k=k, verbosity=False)
 
-            if verbosity:
+            if debug or verbosity:
                 print('topk_video_ids: {}\ntopk_video_labels: {}'.format(topk_video_ids, topk_video_labels))
             # Update count and counter_count.
             # batch_size * delta.
@@ -370,11 +375,11 @@ def main(unused_argv):
                 count[delta, range_num_classes] += inc
                 counter_count[delta, range_num_classes] += 1 - inc
 
-            if verbosity:
+            if debug or verbosity:
                 print('count: {}\ncounter_count: {}'.format(count, counter_count))
 
-            # TODO, Debug mode.
-            # coord.request_stop()
+            if debug:
+                coord.request_stop()
 
             processing_count += 1
             num_examples_processed += video_id_batch_val.shape[0]
@@ -395,33 +400,170 @@ def main(unused_argv):
     pos_prob_negative = (smooth_para + counter_count) / (smooth_para * (k + 1) + counter_count.sum(axis=0))
 
     # Write to files for future use.
-    store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, outpur_dir)
+    store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, output_dir)
 
     sess.close()
+
+
+def make_predictions(out_file_location, top_k, k=8, debug=False):
+    """
+
+    :param out_file_location: The file to which predictions should be written to. Supports gcloud file.
+    :param top_k: See FLAGS.top_k.
+    :param k: The k in ml-knn.
+    :param debug: If True, make predictions on a single file and find k nearest neighbors from a single file.
+    :return:
+    """
+    train_data_pattern = '/Users/Sophie/Documents/youtube-8m-data/train/trainaW.tfrecord' \
+        if debug else FLAGS.train_data_pattern
+
+    test_data_pattern = '/Users/Sophie/Documents/youtube-8m-data/test/test4a.tfrecord' \
+        if debug else FLAGS.test_data_pattern
+
+    verbosity = FLAGS.verbosity
+    output_dir = FLAGS.output_dir
+
+    # Load prior and posterior probabilities.
+    sum_labels, accum_num_videos, labels_prior_prob = recover_prior_prob(folder=output_dir)
+    count, counter_count, pos_prob_positive, pos_prob_negative = recover_posterior_prob(k, folder=output_dir)
+
+    # Make batch predictions.
+    reader = get_reader()
+    inner_reader = get_reader()
+
+    # Total number of classes.
+    num_classes = reader.num_classes
+    range_num_classes = range(num_classes)
+
+    with tf.Session() as sess, gfile.Open(out_file_location, "w+") as out_file:
+        # For debug, use a single tfrecord file (debug mode).
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
+            reader, test_data_pattern, 8192)
+
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+        sess.run(init_op)
+
+        # Be cautious to not be blocked by queue.
+        # Start input enqueue threads.
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+        processing_count = 0
+
+        out_file.write("VideoId,LabelConfidencePairs\n")
+
+        try:
+
+            while not coord.should_stop():
+                # Run training steps or whatever.
+                start_time = time.time()
+                video_id_batch_val, video_batch_val, video_labels_batch_val = sess.run(
+                    [video_id_batch, video_batch, video_labels_batch])
+
+                if debug or verbosity:
+                    print('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
+
+                # Pass values instead of tensors.
+                topk_video_ids, topk_video_labels = find_k_nearest_neighbors(video_id_batch_val,
+                                                                             video_batch_val, inner_reader,
+                                                                             data_pattern=train_data_pattern,
+                                                                             k=k, verbosity=False)
+
+                if debug or verbosity:
+                    print('topk_video_ids: {}\ntopk_video_labels: {}'.format(topk_video_ids, topk_video_labels))
+                # batch_size * delta.
+                deltas = topk_video_labels.astype(np.int32).sum(axis=1)
+
+                batch_predictions_prob = []
+                for delta in deltas:
+                    positive_prob_numerator = labels_prior_prob * pos_prob_positive[delta, range_num_classes]
+                    negative_prob_numerator = (1.0 - labels_prior_prob) * pos_prob_negative[delta, range_num_classes]
+                    # predictions = positive_prob_numerator > negative_prob_numerator
+
+                    batch_predictions_prob.append(
+                        positive_prob_numerator / (positive_prob_numerator + negative_prob_numerator))
+
+                # Write batch predictions to files.
+                for line in format_lines(video_id_batch_val, batch_predictions_prob, top_k):
+                    out_file.write(line)
+                out_file.flush()
+
+                if debug:
+                    coord.request_stop()
+
+                now = time.time()
+                processing_count += 1
+                num_examples_processed = video_id_batch_val.shape[0]
+                print('Batch processing step: {}, number of examples processed: {}, elapsed seconds: {0:.2f}'.format(
+                    processing_count, num_examples_processed, now - start_time))
+
+        except tf.errors.OutOfRangeError:
+            logging.info('Done with inference. The output file was written to {}'.format(out_file_location))
+        finally:
+            # When done, ask the threads to stop.
+            coord.request_stop()
+
+        # Wait for threads to finish.
+        coord.join(threads)
+
+        sess.close()
+        out_file.close()
+
+
+def main(unused_argv):
+    is_train = FLAGS.is_train
+    is_tuning_hyper_para = FLAGS.is_tuning_hyper_para
+    is_debug = FLAGS.is_debug
+    output_file = FLAGS.output_file
+    top_k = FLAGS.top_k
+
+    if is_train:
+        if is_tuning_hyper_para:
+            # TODO, implement.
+            raise NotImplementedError('Implementation is under progress.')
+        else:
+            compute_prior_posterior_prob(debug=is_debug)
+    else:
+        make_predictions(output_file, top_k, debug=is_debug)
+
 
 if __name__ == '__main__':
     flags.DEFINE_string('model_type', 'video', 'video or frame level model')
 
-    # TODO, change according to running environment. Set as '' to be passed in python running command.
-    flags.DEFINE_string(
-        "train_data_pattern", "/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord",
-        "File glob for the training dataset. If the files refer to Frame Level "
-        "features (i.e. tensorflow.SequenceExample), then set --reader_type "
-        "format. The (Sequence)Examples are expected to have 'rgb' byte array "
-        "sequence feature as well as a 'labels' int64 context feature.")
+    # Set as '' to be passed in python running command.
+    flags.DEFINE_string('train_data_pattern',
+                        '/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord',
+                        'File glob for the training dataset.')
 
-    flags.DEFINE_string('feature_names', 'mean_rgb', 'features to be used, separated by ,.')
+    flags.DEFINE_string('validate_data_pattern',
+                        '/Users/Sophie/Documents/youtube-8m-data/validate/validateo*.tfrecord',
+                        'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
-    flags.DEFINE_string('feature_sizes', '1024', 'dimensions of features to be used, separated by ,.')
+    flags.DEFINE_string('test_data_pattern',
+                        '/Users/Sophie/Documents/youtube-8m-data/test/test4*.tfrecord',
+                        'Test data pattern, to be specified when making predictions.')
 
-    flags.DEFINE_integer('batch_size', 8192, 'size of batch processing')
+    flags.DEFINE_string('feature_names', 'mean_rgb', 'Features to be used, separated by ,.')
 
-    flags.DEFINE_integer('k', 8, 'k-nearest neighbor')
+    flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
 
-    flags.DEFINE_float('smooth_para', 1.0, 'smooth parameter, default as 1.0')
+    flags.DEFINE_integer('batch_size', 8192, 'Size of batch processing.')
 
-    flags.DEFINE_boolean('verbosity', False, 'whether print intermediate results, default no.')
+    flags.DEFINE_boolean('verbosity', False, 'Whether print intermediate results, default no.')
 
-    flags.DEFINE_string('output_dir', '', 'output directory')
+    flags.DEFINE_string('output_dir', '', 'The directory to which prior and posterior probabilities should be written.')
+
+    flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
+
+    flags.DEFINE_boolean('is_tuning_hyper_para', False,
+                         'Boolean variable indicating whether to perform hyper-parameter tuning.')
+
+    # TODO, change it.
+    flags.DEFINE_boolean('is_debug', True, 'Boolean variable to indicate debug ot not.')
+
+    flags.DEFINE_string('output_file', '', 'The file to save the predictions to.')
+
+    flags.DEFINE_integer('top_k', 20, 'How many predictions to output per video.')
 
     app.run()

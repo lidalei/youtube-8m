@@ -206,7 +206,7 @@ class YT8MFrameFeatureReader(BaseReader):
     """
 
         assert len(feature_names) == len(feature_sizes), \
-            "length of feature_names (={}) != length of feature_sizes (={})".format( \
+            "length of feature_names (={}) != length of feature_sizes (={})".format(
                 len(feature_names), len(feature_sizes))
 
         self.num_classes = num_classes

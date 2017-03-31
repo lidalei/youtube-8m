@@ -71,8 +71,7 @@ def format_lines(video_ids, predictions, top_k):
         line = [(class_index, predictions[video_index][class_index])
                 for class_index in top_indices]
         line = sorted(line, key=lambda p: -p[1])
-        yield video_ids[video_index].decode('utf-8') + "," + " ".join("%i %f" % pair
-                                                                      for pair in line) + "\n"
+        yield video_ids[video_index].decode('utf-8') + "," + " ".join("%i %f" % pair for pair in line) + "\n"
 
 
 def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1):
@@ -153,9 +152,8 @@ def inference(reader, train_dir, data_pattern, out_file_location, batch_size, to
                 now = time.time()
                 num_examples_processed += len(video_batch_val)
                 num_classes = predictions_val.shape[1]
-                logging.info(
-                    "num examples processed: {} elapsed seconds: {0:.2f}".format(
-                        num_examples_processed, now - start_time))
+                logging.info("num examples processed: {} elapsed seconds: {0:.2f}".format(
+                    num_examples_processed, now - start_time))
 
                 for line in format_lines(video_id_batch_val, predictions_val, top_k):
                     out_file.write(line)
