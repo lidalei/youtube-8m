@@ -440,8 +440,8 @@ class Trainer(object):
                         gap = eval_util.calculate_gap(predictions_val, labels_val)
 
                         logging.info(
-                            "{}: training step | Hit@1: {}  PERR: {} GAP: {} Loss: {}".format(
-                                global_step_val, hit_at_one, perr, gap, loss_val), task_str)
+                            "training step {0} | Hit@1: {1} | PERR: {2} | GAP: {3} | Loss: {4}".format(
+                                global_step_val, hit_at_one, perr, gap, loss_val))
 
                         sv.summary_writer.add_summary(
                             utils.MakeSummary("model/Training_Hit@1", hit_at_one), global_step_val)
