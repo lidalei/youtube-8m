@@ -75,9 +75,11 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1, verbosity=False):
     :param verbosity:
     :return: (total number of labels per label, total number of videos processed, prior probabilities)
     """
+    batch_size = FLAGS.batch_size
+    num_readers = FLAGS.num_readers
     # Generate example queue. Traverse the queue to traverse the dataset.
     video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-        reader=reader, data_pattern=data_pattern, batch_size=8192, num_readers=1, num_epochs=1)
+        reader=reader, data_pattern=data_pattern, batch_size=batch_size, num_readers=num_readers, num_epochs=1)
 
     num_classes = reader.num_classes
 
@@ -119,26 +121,28 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1, verbosity=False):
     return sum_labels_val, accum_num_videos_val, labels_prior_prob_val
 
 
-def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, k=3, verbosity=True):
+def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, batch_size=8192, k=3, verbosity=True):
     """
     Return k-nearest neighbors. https://www.tensorflow.org/programmers_guide/reading_data.
     :param video_id_batch: Must be a value.
     :param video_batch: Must be a value.
     :param reader:
     :param data_pattern:
+    :param batch_size:
     :param k:
     :param verbosity:
     :return: k-nearest videos, representing by (video_ids, video_labels)
     """
 
+    num_readers = FLAGS.num_readers
     # Create a new graph to compute k-nearest neighbors from video_batch_inner for each video of video_batch.
     with tf.Graph().as_default() as graph:
         # Generate example queue. Traverse the queue to traverse the dataset.
         # Works as the inner loop of finding k-nearest neighbors.
         video_id_batch_inner, video_batch_inner, video_labels_batch_inner, num_frames_batch_inner = (
             get_input_data_tensors(
-                reader=reader, data_pattern=data_pattern, batch_size=8192,
-                num_readers=1, num_epochs=1, name_scope='inner_loop'))
+                reader=reader, data_pattern=data_pattern, batch_size=batch_size,
+                num_readers=num_readers, num_epochs=1, name_scope='inner_loop'))
 
         # normalization
         feature_dim = len(video_batch_inner.get_shape()) - 1
@@ -300,6 +304,8 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     train_data_pattern = '/Users/Sophie/Documents/youtube-8m-data/train/trainaW.tfrecord' \
         if debug else FLAGS.train_data_pattern
 
+    batch_size = 1024 if debug else FLAGS.batch_size
+    num_readers = 1 if debug else FLAGS.num_readers
     verbosity = FLAGS.verbosity
     output_dir = FLAGS.output_dir
 
@@ -327,7 +333,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
 
     # For debug, use a single tfrecord file (debug mode).
     video_id_batch, video_batch, video_labels_batch, num_frames_batch = (get_input_data_tensors(
-        reader, train_data_pattern, 8192))
+        reader, train_data_pattern, batch_size, num_readers=num_readers))
 
     tf.summary.scalar('global_step', global_step)
 
@@ -354,7 +360,8 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     try:
 
         while not coord.should_stop():
-            # Run training steps or whatever
+            # Run training steps or whatever.
+            start_time = time.time()
             video_id_batch_val, video_batch_val, video_labels_batch_val = sess.run(
                 [video_id_batch, video_batch, video_labels_batch])
 
@@ -365,6 +372,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
             topk_video_ids, topk_video_labels = find_k_nearest_neighbors(video_id_batch_val,
                                                                          video_batch_val, inner_reader,
                                                                          data_pattern=train_data_pattern,
+                                                                         batch_size=batch_size,
                                                                          k=k, verbosity=False)
 
             if debug or verbosity:
@@ -385,9 +393,11 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
                 coord.request_stop()
 
             global_step_val, summary = sess.run([global_step_inc_op, summary_op])
+            now = time.time()
             num_examples_processed += video_id_batch_val.shape[0]
-            print('Batch processing steps: {}, total number of examples processed: {}'.format(global_step_val,
-                                                                                              num_examples_processed))
+            print('Batch processing step: {}, elapsed seconds: {}, total number of examples processed: {}'.format(
+                global_step_val, now - start_time, num_examples_processed))
+
             writer.add_summary(summary, global_step=global_step_val)
 
     except tf.errors.OutOfRangeError:
@@ -425,7 +435,8 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
 
     verbosity = FLAGS.verbosity
     output_dir = FLAGS.output_dir
-    batch_size = FLAGS.batch_size
+    batch_size = 1024 if debug else FLAGS.batch_size
+    num_readers = 1 if debug else FLAGS.num_readers
 
     # Load prior and posterior probabilities.
     sum_labels, accum_num_videos, labels_prior_prob = recover_prior_prob(folder=output_dir)
@@ -443,7 +454,7 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
 
         # For debug, use a single tfrecord file (debug mode).
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-            reader, test_data_pattern, batch_size)
+            reader, test_data_pattern, batch_size, num_readers=num_readers)
 
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
@@ -454,7 +465,7 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-        processing_count = 0
+        processing_count, num_examples_processed = 0, 0
         out_file.write("VideoId,LabelConfidencePairs\n")
 
         try:
@@ -472,6 +483,7 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
                 topk_video_ids, topk_video_labels = find_k_nearest_neighbors(video_id_batch_val,
                                                                              video_batch_val, inner_reader,
                                                                              data_pattern=train_data_pattern,
+                                                                             batch_size=batch_size,
                                                                              k=k, verbosity=False)
 
                 if debug or verbosity:
@@ -498,9 +510,9 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
 
                 now = time.time()
                 processing_count += 1
-                num_examples_processed = video_id_batch_val.shape[0]
-                print('Batch processing step: {}, number of examples processed: {}, elapsed seconds: {}'.format(
-                    processing_count, num_examples_processed, now - start_time))
+                num_examples_processed += video_id_batch_val.shape[0]
+                print('Batch processing step: {}, elapsed seconds: {}, total number of examples processed: {}'.format(
+                    processing_count, now - start_time, num_examples_processed))
 
         except tf.errors.OutOfRangeError:
             logging.info('Done with inference. The output file was written to {}'.format(out_file_location))
@@ -552,14 +564,16 @@ if __name__ == '__main__':
 
     flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
 
-    flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
+    # Set by the memory limit (52GB).
+    flags.DEFINE_integer('batch_size', 24576, 'Size of batch processing.')
+    flags.DEFINE_integer('num_readers', 4, 'Number of readers to form a batch.')
 
     flags.DEFINE_boolean('verbosity', False, 'Whether print intermediate results, default no.')
 
     flags.DEFINE_string('output_dir', '/tmp/ml-knn/',
                         'The directory to which prior and posterior probabilities should be written.')
 
-    flags.DEFINE_boolean('is_train', False, 'Boolean variable to indicate training or test.')
+    flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
 
     flags.DEFINE_boolean('is_tuning_hyper_para', False,
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
