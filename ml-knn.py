@@ -72,6 +72,7 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1, verbosity=False):
     :param reader:
     :param data_pattern:
     :param smooth_para:
+    :param verbosity:
     :return: (total number of labels per label, total number of videos processed, prior probabilities)
     """
     # Generate example queue. Traverse the queue to traverse the dataset.
@@ -87,30 +88,29 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1, verbosity=False):
     accum_num_videos_op = total_num_videos.assign_add(tf.cast(tf.shape(video_labels_batch)[0], tf.float32))
 
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-    sess = tf.Session()
-    sess.run(init_op)
+    with tf.Session() as sess:
+        sess.run(init_op)
 
-    # Start input enqueue threads.
-    coord = tf.train.Coordinator()
-    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+        # Start input enqueue threads.
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-    try:
-        while not coord.should_stop():
-            # sum video labels
-            sum_labels_val, accum_num_videos_val = sess.run([sum_labels_onehot_op, accum_num_videos_op])
+        try:
+            while not coord.should_stop():
+                # sum video labels
+                sum_labels_val, accum_num_videos_val = sess.run([sum_labels_onehot_op, accum_num_videos_op])
 
-    except tf.errors.OutOfRangeError:
-        logging.info('Done the whole dataset.')
-    finally:
-        # When done, ask the threads to stop.
-        coord.request_stop()
+        except tf.errors.OutOfRangeError:
+            logging.info('Done the whole dataset.')
+        finally:
+            # When done, ask the threads to stop.
+            coord.request_stop()
 
-    # Wait for threads to finish.
-    coord.join(threads)
+        # Wait for threads to finish.
+        coord.join(threads)
+        sess.close()
 
     labels_prior_prob_val = (smooth_para + sum_labels_val) / (smooth_para * 2 + accum_num_videos_val)
-
-    sess.close()
 
     if verbosity:
         print('sum_labels_val: {}\n accum_num_videos_val: {}'.format(sum_labels_val, accum_num_videos_val))
@@ -146,81 +146,83 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     # Initialization.
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
-    sess = tf.Session()
+    with tf.Session() as sess:
+        sess.run(init_op)
 
-    sess.run(init_op)
+        # normalization
+        feature_dim = len(video_batch.shape) - 1
 
-    # normalization
-    feature_dim = len(video_batch.shape) - 1
+        video_batch_normalized = tf.nn.l2_normalize(video_batch, feature_dim)
+        video_batch_inner_normalized = tf.nn.l2_normalize(video_batch_inner, feature_dim)
 
-    video_batch_normalized = tf.nn.l2_normalize(video_batch, feature_dim)
-    video_batch_inner_normalized = tf.nn.l2_normalize(video_batch_inner, feature_dim)
+        # compute cosine similarities
+        similarities = tf.matmul(video_batch_normalized, video_batch_inner_normalized, transpose_b=True)
+        # top k similar videos per video in video_batch_normalized.
+        # values and indices are in shape [batch_size, k].
+        # k = k + 1, to avoid the video itself.
+        topk_sim_op = tf.nn.top_k(similarities, k=k + 1)
 
-    # compute cosine similarities
-    similarities = tf.matmul(video_batch_normalized, video_batch_inner_normalized, transpose_b=True)
-    # top k similar videos per video in video_batch_normalized.
-    # values and indices are in shape [batch_size, k].
-    # k = k + 1, to avoid the video itself.
-    topk_sim_op = tf.nn.top_k(similarities, k=k+1)
+        # Start input enqueue threads.
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-    # Start input enqueue threads.
-    coord = tf.train.Coordinator()
-    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+        try:
+            while not coord.should_stop():
+                # Run results are numpy arrays.
+                video_id_batch_inner_val, video_labels_batch_inner_val, (
+                batch_topk_sims, batch_topk_sim_indices) = sess.run(
+                    [video_id_batch_inner, video_labels_batch_inner, topk_sim_op])
 
-    try:
-        while not coord.should_stop():
-            # Run results are numpy arrays.
-            video_id_batch_inner_val, video_labels_batch_inner_val, (batch_topk_sims, batch_topk_sim_indices) = sess.run(
-                [video_id_batch_inner, video_labels_batch_inner, topk_sim_op])
+                # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
+                # np.stack() can be np.array().
+                batch_topk_video_ids = np.stack([video_id_batch_inner_val[ind] for ind in batch_topk_sim_indices])
+                batch_topk_video_labels = np.stack(
+                    [video_labels_batch_inner_val[ind] for ind in batch_topk_sim_indices])
 
-            # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
-            # np.stack() can be np.array().
-            batch_topk_video_ids = np.stack([video_id_batch_inner_val[ind] for ind in batch_topk_sim_indices])
-            batch_topk_video_labels = np.stack([video_labels_batch_inner_val[ind] for ind in batch_topk_sim_indices])
-
-            if verbosity:
-                # Debug mode.
-                print('video_id_batch: {}'.format(video_id_batch))
-                print('batch_topk_sims: {}\nbatch_topk_sim_indices: {}'.format(batch_topk_sims,
-                                                                               batch_topk_sim_indices))
-                print('batch_topk_video_ids: {}\nbatch_topk_video_labels: {}'.format(batch_topk_video_ids,
-                                                                                     batch_topk_video_labels))
-
-                coord.request_stop()
-
-            # Update top k similar videos.
-            if (topk_video_ids is None) or (topk_video_labels is None) or (topk_video_sims is None):
-                # The first batch.
-                topk_video_ids = batch_topk_video_ids
-                topk_video_labels = batch_topk_video_labels
-                topk_video_sims = batch_topk_sims
-            else:
-                # Combine batch top k video ids and labels into current top k ids and labels.
                 if verbosity:
-                    print('topk_video_ids shape: {}, batch_topk_video_ids shape: {}'.format(topk_video_ids.shape,
-                                                                                            batch_topk_video_ids.shape))
-                top2k_video_ids = np.concatenate((topk_video_ids, batch_topk_video_ids), axis=1)
-                if verbosity:
-                    print('topk_video_labels shape: {}, batch_topk_video_labels shape: {}'.format(
-                        topk_video_labels.shape, batch_topk_video_labels.shape))
-                top_2k_video_labels = np.concatenate((topk_video_labels, batch_topk_video_labels), axis=1)
-                top2k_video_sims = np.concatenate((topk_video_sims, batch_topk_sims), axis=1)
-                # k=k+1, to exclude the example itself finally.
-                topk_video_sims, topk_video_sims_indices = sess.run(tf.nn.top_k(top2k_video_sims, k=k+1))
+                    # Debug mode.
+                    print('video_id_batch: {}'.format(video_id_batch))
+                    print('batch_topk_sims: {}\nbatch_topk_sim_indices: {}'.format(batch_topk_sims,
+                                                                                   batch_topk_sim_indices))
+                    print('batch_topk_video_ids: {}\nbatch_topk_video_labels: {}'.format(batch_topk_video_ids,
+                                                                                         batch_topk_video_labels))
 
-                topk_video_ids = np.stack([top2k_video_ids[i, ind] for i, ind in enumerate(topk_video_sims_indices)])
-                topk_video_labels = np.stack(
-                    [top_2k_video_labels[i, ind] for i, ind in enumerate(topk_video_sims_indices)])
+                    coord.request_stop()
 
-    except tf.errors.OutOfRangeError:
-        logging.info('Done the whole dataset.')
-    finally:
-        # When done, ask the threads to stop.
-        coord.request_stop()
+                # Update top k similar videos.
+                if (topk_video_ids is None) or (topk_video_labels is None) or (topk_video_sims is None):
+                    # The first batch.
+                    topk_video_ids = batch_topk_video_ids
+                    topk_video_labels = batch_topk_video_labels
+                    topk_video_sims = batch_topk_sims
+                else:
+                    # Combine batch top k video ids and labels into current top k ids and labels.
+                    if verbosity:
+                        print('topk_video_ids shape: {}, batch_topk_video_ids shape: {}'.format(topk_video_ids.shape,
+                                                                                                batch_topk_video_ids.shape))
+                    top2k_video_ids = np.concatenate((topk_video_ids, batch_topk_video_ids), axis=1)
+                    if verbosity:
+                        print('topk_video_labels shape: {}, batch_topk_video_labels shape: {}'.format(
+                            topk_video_labels.shape, batch_topk_video_labels.shape))
+                    top_2k_video_labels = np.concatenate((topk_video_labels, batch_topk_video_labels), axis=1)
+                    top2k_video_sims = np.concatenate((topk_video_sims, batch_topk_sims), axis=1)
+                    # k=k+1, to exclude the example itself finally.
+                    topk_video_sims, topk_video_sims_indices = sess.run(tf.nn.top_k(top2k_video_sims, k=k + 1))
 
-    # Wait for threads to finish.
-    coord.join(threads)
-    sess.close()
+                    topk_video_ids = np.stack(
+                        [top2k_video_ids[i, ind] for i, ind in enumerate(topk_video_sims_indices)])
+                    topk_video_labels = np.stack(
+                        [top_2k_video_labels[i, ind] for i, ind in enumerate(topk_video_sims_indices)])
+
+        except tf.errors.OutOfRangeError:
+            logging.info('Done the whole dataset.')
+        finally:
+            # When done, ask the threads to stop.
+            coord.request_stop()
+
+        # Wait for threads to finish.
+        coord.join(threads)
+        sess.close()
 
     # Exclude the example itself if it exists.
     clean_topk_video_ids, clean_topk_video_labels = [], []
@@ -316,17 +318,27 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     count = np.zeros([k + 1, num_classes], dtype=np.float32)
     counter_count = np.zeros([k + 1, num_classes], dtype=np.float32)
 
+    global_step = tf.Variable(0, trainable=False, dtype=tf.int64, name='global_step')
+    global_step_inc_op = global_step.assign_add(1)
+
     # For debug, use a single tfrecord file (debug mode).
-    video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-        reader, train_data_pattern, 8192)
+    video_id_batch, video_batch, video_labels_batch, num_frames_batch = (get_input_data_tensors(
+        reader, train_data_pattern, 8192))
+
+    tf.summary.scalar('global_step', global_step)
 
     init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
     sess = tf.Session()
 
+    writer = tf.summary.FileWriter(FLAGS.output_dir, sess.graph)
+    summary_op = tf.summary.merge_all()
+
     sess.run(init_op)
 
     inner_reader = get_reader()
+
+    # TODO, add a train.Saver.
 
     # Be cautious to not be blocked by queue.
     # Start input enqueue threads.
@@ -368,10 +380,11 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
             if debug:
                 coord.request_stop()
 
-            processing_count += 1
+            global_step_val, summary = sess.run([global_step_inc_op, summary_op])
             num_examples_processed += video_id_batch_val.shape[0]
-            print('Batch processing steps: {}, total number of examples processed: {}'.format(processing_count,
+            print('Batch processing steps: {}, total number of examples processed: {}'.format(global_step_val,
                                                                                               num_examples_processed))
+            writer.add_summary(summary, global_step=global_step_val)
 
     except tf.errors.OutOfRangeError:
         logging.info('Done training -- epoch limit reached')
@@ -409,6 +422,7 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
 
     verbosity = FLAGS.verbosity
     output_dir = FLAGS.output_dir
+    batch_size = FLAGS.batch_size
 
     # Load prior and posterior probabilities.
     sum_labels, accum_num_videos, labels_prior_prob = recover_prior_prob(folder=output_dir)
@@ -423,9 +437,10 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
     range_num_classes = range(num_classes)
 
     with tf.Session() as sess, gfile.Open(out_file_location, "w+") as out_file:
+
         # For debug, use a single tfrecord file (debug mode).
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-            reader, test_data_pattern, 8192)
+            reader, test_data_pattern, batch_size)
 
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
@@ -437,7 +452,6 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
         threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
         processing_count = 0
-
         out_file.write("VideoId,LabelConfidencePairs\n")
 
         try:
@@ -535,11 +549,12 @@ if __name__ == '__main__':
 
     flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
 
-    flags.DEFINE_integer('batch_size', 8192, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
 
     flags.DEFINE_boolean('verbosity', False, 'Whether print intermediate results, default no.')
 
-    flags.DEFINE_string('output_dir', '', 'The directory to which prior and posterior probabilities should be written.')
+    flags.DEFINE_string('output_dir', '/tmp/ml-knn/',
+                        'The directory to which prior and posterior probabilities should be written.')
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
 
@@ -547,7 +562,7 @@ if __name__ == '__main__':
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
     # TODO, change it.
-    flags.DEFINE_boolean('is_debug', True, 'Boolean variable to indicate debug ot not.')
+    flags.DEFINE_boolean('is_debug', False, 'Boolean variable to indicate debug ot not.')
 
     flags.DEFINE_string('output_file', '', 'The file to save the predictions to.')
 
