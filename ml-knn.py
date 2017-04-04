@@ -49,10 +49,11 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
     """
     # Adapted from namesake function in inference.py.
     with tf.name_scope(name_scope):
+        # Glob() can be replace with tf.train.match_filenames_once(), which is an operation.
         files = gfile.Glob(data_pattern)
         if not files:
             raise IOError("Unable to find input files. data_pattern='{}'".format(data_pattern))
-        logging.info("number of input files: {}".format(len(files)))
+        logging.info("Number of input files: {}".format(len(files)))
         # Pass test data once. Thus, num_epochs is set as 1.
         filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=False)
         examples_and_labels = [reader.prepare_reader(filename_queue) for _ in range(num_readers)]
@@ -237,29 +238,23 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
 def store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder=''):
     with open(folder + 'sum_labels.pickle', 'wb') as pickle_file:
         pickle.dump(sum_labels, pickle_file)
-    pickle_file.close()
 
     with open(folder + 'accum_num_videos.pickle', 'wb') as pickle_file:
         pickle.dump(accum_num_videos, pickle_file)
-    pickle_file.close()
 
     with open(folder + 'labels_prior_prob.pickle', 'wb') as pickle_file:
         pickle.dump(labels_prior_prob, pickle_file)
-    pickle_file.close()
 
 
 def recover_prior_prob(folder=''):
     with open(folder + 'sum_labels.pickle', 'rb') as pickle_file:
         sum_labels = pickle.load(pickle_file)
-    pickle_file.close()
 
     with open(folder + 'accum_num_videos.pickle', 'rb') as pickle_file:
         accum_num_videos = pickle.load(pickle_file)
-    pickle_file.close()
 
     with open(folder + 'labels_prior_prob.pickle', 'rb') as pickle_file:
         labels_prior_prob = pickle.load(pickle_file)
-    pickle_file.close()
 
     return sum_labels, accum_num_videos, labels_prior_prob
 
@@ -267,37 +262,29 @@ def recover_prior_prob(folder=''):
 def store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, folder=''):
     with open(folder + 'count_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(count, pickle_file)
-    pickle_file.close()
 
     with open(folder + 'counter_count_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(counter_count, pickle_file)
-    pickle_file.close()
 
     with open('pos_prob_positive_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(pos_prob_positive, pickle_file)
-    pickle_file.close()
 
     with open('pos_prob_negative_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(pos_prob_negative, pickle_file)
-    pickle_file.close()
 
 
 def recover_posterior_prob(k, folder=''):
     with open(folder + 'count_{}.pickle'.format(k), 'rb') as pickle_file:
         count = pickle.load(pickle_file)
-    pickle_file.close()
 
     with open(folder + 'counter_count_{}.pickle'.format(k), 'rb') as pickle_file:
         counter_count = pickle.load(pickle_file)
-    pickle_file.close()
 
     with open('pos_prob_positive_{}.pickle'.format(k), 'rb') as pickle_file:
         pos_prob_positive = pickle.load(pickle_file)
-    pickle_file.close()
 
     with open('pos_prob_negative_{}.pickle'.format(k), 'rb') as pickle_file:
         pos_prob_negative = pickle.load(pickle_file)
-    pickle_file.close()
 
     return count, counter_count, pos_prob_positive, pos_prob_negative
 
