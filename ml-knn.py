@@ -131,26 +131,17 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     :return: k-nearest videos, representing by (video_ids, video_labels)
     """
 
-    # Generate example queue. Traverse the queue to traverse the dataset.
-    # Works as the inner loop of finding k-nearest neighbors.
-    video_id_batch_inner, video_batch_inner, video_labels_batch_inner, num_frames_batch_inner = get_input_data_tensors(
-        reader=reader, data_pattern=data_pattern, batch_size=8192, num_readers=1, num_epochs=1, name_scope='inner_loop')
-
-    # batch_size = int(video_id_batch.shape[0])
-    # Define variables representing k nearest video_ids, video_labels and video_similarities.
-    topk_video_ids = None  # batch_size * [[]]
-    # Variable-length labels.
-    topk_video_labels = None  # batch_size * [[]]
-    topk_video_sims = None  # batch_size * [[0.0] * k]
-
-    # Initialization.
-    init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-
-    with tf.Session() as sess:
-        sess.run(init_op)
+    # Create a new graph to compute k-nearest neighbors from video_batch_inner for each video of video_batch.
+    with tf.Graph().as_default() as graph:
+        # Generate example queue. Traverse the queue to traverse the dataset.
+        # Works as the inner loop of finding k-nearest neighbors.
+        video_id_batch_inner, video_batch_inner, video_labels_batch_inner, num_frames_batch_inner = (
+            get_input_data_tensors(
+                reader=reader, data_pattern=data_pattern, batch_size=8192,
+                num_readers=1, num_epochs=1, name_scope='inner_loop'))
 
         # normalization
-        feature_dim = len(video_batch.shape) - 1
+        feature_dim = len(video_batch_inner.get_shape()) - 1
 
         video_batch_normalized = tf.nn.l2_normalize(video_batch, feature_dim)
         video_batch_inner_normalized = tf.nn.l2_normalize(video_batch_inner, feature_dim)
@@ -162,6 +153,20 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         # k = k + 1, to avoid the video itself.
         topk_sim_op = tf.nn.top_k(similarities, k=k + 1)
 
+        # Initialization.
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    # batch_size = int(video_id_batch.shape[0])
+    # Define variables representing k nearest video_ids, video_labels and video_similarities.
+    topk_video_ids = None  # batch_size * [[]]
+    # Variable-length labels.
+    topk_video_labels = None  # batch_size * [[]]
+    topk_video_sims = None  # batch_size * [[0.0] * k]
+
+    # A new graph needs a new session. Thus, create one.
+    with tf.Session(graph=graph) as sess:
+        sess.run(init_op)
+
         # Start input enqueue threads.
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(sess=sess, coord=coord)
@@ -170,7 +175,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
             while not coord.should_stop():
                 # Run results are numpy arrays.
                 video_id_batch_inner_val, video_labels_batch_inner_val, (
-                batch_topk_sims, batch_topk_sim_indices) = sess.run(
+                    batch_topk_sims, batch_topk_sim_indices) = sess.run(
                     [video_id_batch_inner, video_labels_batch_inner, topk_sim_op])
 
                 # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
@@ -268,10 +273,10 @@ def store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negat
     with open(folder + 'counter_count_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(counter_count, pickle_file)
 
-    with open('pos_prob_positive_{}.pickle'.format(k), 'wb') as pickle_file:
+    with open(folder + 'pos_prob_positive_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(pos_prob_positive, pickle_file)
 
-    with open('pos_prob_negative_{}.pickle'.format(k), 'wb') as pickle_file:
+    with open(folder + 'pos_prob_negative_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(pos_prob_negative, pickle_file)
 
 
@@ -282,10 +287,10 @@ def recover_posterior_prob(k, folder=''):
     with open(folder + 'counter_count_{}.pickle'.format(k), 'rb') as pickle_file:
         counter_count = pickle.load(pickle_file)
 
-    with open('pos_prob_positive_{}.pickle'.format(k), 'rb') as pickle_file:
+    with open(folder + 'pos_prob_positive_{}.pickle'.format(k), 'rb') as pickle_file:
         pos_prob_positive = pickle.load(pickle_file)
 
-    with open('pos_prob_negative_{}.pickle'.format(k), 'rb') as pickle_file:
+    with open(folder + 'pos_prob_negative_{}.pickle'.format(k), 'rb') as pickle_file:
         pos_prob_negative = pickle.load(pickle_file)
 
     return count, counter_count, pos_prob_positive, pos_prob_negative
@@ -299,9 +304,8 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     output_dir = FLAGS.output_dir
 
     reader = get_reader()
-
-    # Step 1. Compute prior probabilities and store the results.
     """
+    # Step 1. Compute prior probabilities and store the results.
     sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(reader, train_data_pattern, smooth_para)
     store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, output_dir)
     """
@@ -394,6 +398,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
 
     # Wait for threads to finish.
     coord.join(threads)
+    sess.close()
 
     # Compute posterior probabilities.
     pos_prob_positive = (smooth_para + count) / (smooth_para * (k + 1) + count.sum(axis=0))
@@ -401,8 +406,6 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
 
     # Write to files for future use.
     store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, output_dir)
-
-    sess.close()
 
 
 def make_predictions(out_file_location, top_k, k=8, debug=False):
@@ -496,7 +499,7 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
                 now = time.time()
                 processing_count += 1
                 num_examples_processed = video_id_batch_val.shape[0]
-                print('Batch processing step: {}, number of examples processed: {}, elapsed seconds: {0:.2f}'.format(
+                print('Batch processing step: {}, number of examples processed: {}, elapsed seconds: {}'.format(
                     processing_count, num_examples_processed, now - start_time))
 
         except tf.errors.OutOfRangeError:
@@ -556,7 +559,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('output_dir', '/tmp/ml-knn/',
                         'The directory to which prior and posterior probabilities should be written.')
 
-    flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
+    flags.DEFINE_boolean('is_train', False, 'Boolean variable to indicate training or test.')
 
     flags.DEFINE_boolean('is_tuning_hyper_para', False,
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
@@ -564,7 +567,7 @@ if __name__ == '__main__':
     # TODO, change it.
     flags.DEFINE_boolean('is_debug', False, 'Boolean variable to indicate debug ot not.')
 
-    flags.DEFINE_string('output_file', '', 'The file to save the predictions to.')
+    flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
     flags.DEFINE_integer('top_k', 20, 'How many predictions to output per video.')
 
