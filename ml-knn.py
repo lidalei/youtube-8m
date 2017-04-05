@@ -58,9 +58,15 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=False)
         examples_and_labels = [reader.prepare_reader(filename_queue) for _ in range(num_readers)]
 
+        # In shuffle_batch_join,
+        # capacity must be larger than min_after_dequeue and the amount larger
+        #   determines the maximum we will prefetch.  Recommendation:
+        #   min_after_dequeue + (num_threads + a small safety margin) * batch_size
+        capacity = num_readers * batch_size + 1024
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
             tf.train.batch_join(examples_and_labels,
                                 batch_size=batch_size,
+                                capacity=capacity,
                                 allow_smaller_final_batch=True,
                                 enqueue_many=True))
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
