@@ -1,7 +1,7 @@
 import tensorflow as tf
 import time
 
-import readers
+from readers import get_reader
 import utils
 from tensorflow import flags, gfile, logging, app
 from inference import format_lines
@@ -10,21 +10,6 @@ import pickle
 import numpy as np
 
 FLAGS = flags.FLAGS
-
-
-def get_reader():
-    """
-    similar to train.get_reader()
-    :return:
-    """
-    feature_names, feature_sizes = utils.GetListOfFeatureNamesAndSizes(FLAGS.feature_names, FLAGS.feature_sizes)
-
-    if FLAGS.model_type == 'video':
-        return readers.YT8MAggregatedFeatureReader(feature_sizes=feature_sizes, feature_names=feature_names)
-    elif FLAGS.model_type == 'frame':
-        return readers.YT8MFrameFeatureReader(feature_sizes=feature_sizes, feature_names=feature_names)
-    else:
-        raise NotImplementedError('Not supported model type. Supported ones are video and frame.')
 
 
 def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_epochs=1, name_scope='input'):
@@ -314,8 +299,9 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     num_readers = 1 if debug else FLAGS.num_readers
     verbosity = FLAGS.verbosity
     output_dir = FLAGS.output_dir
+    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
-    reader = get_reader()
+    reader = get_reader(model_type, feature_names, feature_sizes)
     """
     # Step 1. Compute prior probabilities and store the results.
     sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(reader, train_data_pattern, smooth_para)
@@ -352,7 +338,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
 
     sess.run(init_op)
 
-    inner_reader = get_reader()
+    inner_reader = get_reader(model_type, feature_names, feature_sizes)
 
     # TODO, add a train.Saver.
 
@@ -443,14 +429,15 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
     output_dir = FLAGS.output_dir
     batch_size = 1024 if debug else FLAGS.batch_size
     num_readers = 1 if debug else FLAGS.num_readers
+    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
     # Load prior and posterior probabilities.
     sum_labels, accum_num_videos, labels_prior_prob = recover_prior_prob(folder=output_dir)
     count, counter_count, pos_prob_positive, pos_prob_negative = recover_posterior_prob(k, folder=output_dir)
 
     # Make batch predictions.
-    reader = get_reader()
-    inner_reader = get_reader()
+    reader = get_reader(model_type, feature_names, feature_sizes)
+    inner_reader = get_reader(model_type, feature_names, feature_sizes)
 
     # Total number of classes.
     num_classes = reader.num_classes

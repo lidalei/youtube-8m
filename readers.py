@@ -96,7 +96,7 @@ class YT8MAggregatedFeatureReader(BaseReader):
         """Creates a single reader thread for pre-aggregated YouTube 8M Examples.
         Args:
           filename_queue: A tensorflow queue of filename locations.
-          batch_size: An integer that represents batch size while performing batch gradient descent.
+          batch_size: How many examples per reader reads (if num_readers=1, it equals to batch gradient descent size).
 
         Returns:
           A tuple of video indexes, features, labels, and padding data.
@@ -206,8 +206,8 @@ class YT8MFrameFeatureReader(BaseReader):
     """
 
         assert len(feature_names) == len(feature_sizes), \
-            "length of feature_names (={}) != length of feature_sizes (={})".format(
-                len(feature_names), len(feature_sizes))
+            "length of feature_names (={}) != length of feature_sizes (={})".format(len(feature_names),
+                                                                                    len(feature_sizes))
 
         self.num_classes = num_classes
         self.feature_sizes = feature_sizes
@@ -288,8 +288,8 @@ class YT8MFrameFeatureReader(BaseReader):
         assert num_features > 0, "No feature selected: feature_names is empty!"
 
         assert len(self.feature_names) == len(self.feature_sizes), \
-            "length of feature_names (={}) != length of feature_sizes (={})".format( \
-                len(self.feature_names), len(self.feature_sizes))
+            "length of feature_names (={}) != length of feature_sizes (={})".format(len(self.feature_names),
+                                                                                    len(self.feature_sizes))
 
         num_frames = -1  # the number of frames in the video
         feature_matrices = [None] * num_features  # an array of different features
@@ -321,3 +321,22 @@ class YT8MFrameFeatureReader(BaseReader):
         batch_frames = tf.expand_dims(num_frames, 0)
 
         return batch_video_ids, batch_video_matrix, batch_labels, batch_frames
+
+
+def get_reader(model_type, feature_names_csv, feature_sizes_csv):
+    """
+    Similar to train.get_reader()
+
+    :param model_type: `video` or `frame`.
+    :param feature_names_csv: feature names in csv format, for example, `mean_rgb,mean_audio`.
+    :param feature_sizes_csv: feature sizes in csv format, for example, `1024,128`.
+    :return:
+    """
+    feature_names, feature_sizes = utils.GetListOfFeatureNamesAndSizes(feature_names_csv, feature_sizes_csv)
+
+    if model_type == 'video':
+        return YT8MAggregatedFeatureReader(feature_sizes=feature_sizes, feature_names=feature_names)
+    elif model_type == 'frame':
+        return YT8MFrameFeatureReader(feature_sizes=feature_sizes, feature_names=feature_names)
+    else:
+        raise NotImplementedError('Not supported model type. Supported ones are video and frame.')
