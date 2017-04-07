@@ -298,14 +298,14 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     batch_size = 1024 if debug else FLAGS.batch_size
     num_readers = 1 if debug else FLAGS.num_readers
     verbosity = FLAGS.verbosity
-    output_dir = FLAGS.output_dir
+    model_dir = FLAGS.model_dir
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
     reader = get_reader(model_type, feature_names, feature_sizes)
     """
     # Step 1. Compute prior probabilities and store the results.
     sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(reader, train_data_pattern, smooth_para)
-    store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, output_dir)
+    store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, model_dir)
     """
 
     # Step 2. Compute posterior probabilities, actually likelihood function or sampling distribution.
@@ -333,7 +333,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
 
     sess = tf.Session()
 
-    writer = tf.summary.FileWriter(FLAGS.output_dir, sess.graph)
+    writer = tf.summary.FileWriter(model_dir, sess.graph)
     summary_op = tf.summary.merge_all()
 
     sess.run(init_op)
@@ -407,7 +407,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     pos_prob_negative = (smooth_para + counter_count) / (smooth_para * (k + 1) + counter_count.sum(axis=0))
 
     # Write to files for future use.
-    store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, output_dir)
+    store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, model_dir)
 
 
 def make_predictions(out_file_location, top_k, k=8, debug=False):
@@ -426,14 +426,14 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
         if debug else FLAGS.test_data_pattern
 
     verbosity = FLAGS.verbosity
-    output_dir = FLAGS.output_dir
+    model_dir = FLAGS.model_dir
     batch_size = 1024 if debug else FLAGS.batch_size
     num_readers = 1 if debug else FLAGS.num_readers
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
     # Load prior and posterior probabilities.
-    sum_labels, accum_num_videos, labels_prior_prob = recover_prior_prob(folder=output_dir)
-    count, counter_count, pos_prob_positive, pos_prob_negative = recover_posterior_prob(k, folder=output_dir)
+    sum_labels, accum_num_videos, labels_prior_prob = recover_prior_prob(folder=model_dir)
+    count, counter_count, pos_prob_positive, pos_prob_negative = recover_posterior_prob(k, folder=model_dir)
 
     # Make batch predictions.
     reader = get_reader(model_type, feature_names, feature_sizes)
@@ -508,7 +508,7 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
                     processing_count, now - start_time, num_examples_processed))
 
         except tf.errors.OutOfRangeError:
-            logging.info('Done with inference. The output file was written to {}'.format(out_file_location))
+            logging.info('Done with inference. The predictions were written to {}'.format(out_file_location))
         finally:
             # When done, ask the threads to stop.
             coord.request_stop()
@@ -563,7 +563,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_boolean('verbosity', False, 'Whether print intermediate results, default no.')
 
-    flags.DEFINE_string('output_dir', '/tmp/ml-knn/',
+    flags.DEFINE_string('model_dir', '/tmp/ml-knn/',
                         'The directory to which prior and posterior probabilities should be written.')
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
