@@ -1,3 +1,8 @@
+"""
+The referenced paper is
+Zhang M L, Zhou Z H. ML-KNN: A lazy learning approach to multi-label learning[J].
+Pattern recognition, 2007, 40(7): 2038-2048.
+"""
 import tensorflow as tf
 import time
 
