@@ -391,12 +391,15 @@ class Trainer(object):
                 if not meta_filename:
                     saver = self.build_model(self.model, self.reader)
 
+                # Get collection from tf default graph (not graph here).
                 global_step = tf.get_collection("global_step")[0]
                 loss = tf.get_collection("loss")[0]
                 predictions = tf.get_collection("predictions")[0]
                 labels = tf.get_collection("labels")[0]
                 train_op = tf.get_collection("train_op")[0]
                 init_op = tf.global_variables_initializer()
+        # De-indentation won'tfinalize graph.
+        # This means it can still be added operations (constant, variable, and other ops) to.
 
         # A training helper that checkpoints models and computes summaries.
         # Supervisor is a small wrapper around a Coordinator, a Saver, and a SessionManager
