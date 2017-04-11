@@ -2,6 +2,18 @@
 The referenced paper is
 Schwenker F, Kestler H A, Palm G. Three learning phases for radial-basis-function networks[J].
 Neural networks, 2001, 14(4): 439-458.
+and
+Zhang M L. ML-RBF: RBF neural networks for multi-label learning[J]. Neural Processing Letters, 2009, 29(2): 61-74.
+
+In this implementation, training process is split as three phases as described in Schwenker's. Moreover, different
+ second-phases are compared and a third phased is added or not.
+
+More specifically, three different frameworks are implemented. 1, for all L labels, finding a certain number of centers
+ and train L binary logistic regression models on these centers. 2, for each label, finding a certain number of centers
+ and train a logistic regression model on these centers. In total, there are L groups of centers and L logistic
+ regression models. 3, for each label, finding a certain number of centers and train L logistic regression models on
+ all these centers as a whole group. The first framework is described in Schwenker's as multi-class classification.
+ The second one works as one-vs-all. And the third is described in Zhang's.
 """
 import tensorflow as tf
 import time
@@ -62,8 +74,125 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 
+def initialize(num_centers_ratio, per_label=False, method=None, similarity='euclidean',
+               scaling_method=1, alpha=0.1, p=3, debug=False):
+    """
+    This functions implements the following two phases:
+    1. To initialize representative prototypes (RBF centers) c and scaling factors sigma.
+    2. And to fit output weights.
+
+    :param num_centers_ratio: The number of centers to be decided / total number of examples that belong to label l,
+     for l = 0, ..., num_classes - 1.
+    :param per_label: Generate centers for all labels as a whole or L groups of centers for each label.
+    :param method: The method to decide the centers. Possible choices are kmeans, online(kmeans), and lvq(learning).
+     Default is None, which represents randomly selecting a certain number of examples as centers.
+    :param similarity: Similarity metric, euclidean distance or cosine similarity. Be cautious!!! Used when kmeans or
+     lvq is used.
+    :param scaling_method: There are four choices. 1, all of them use the same sigma, the p smallest pairs of distances.
+     2, average of p nearest centers. 3, the distance to the nearest center that has a different label.
+     4, mean distance between this center and all of its points.
+    :param alpha: The alpha parameter that should be set heuristically. It works like a learning rate. (mu in Zhang's)
+    :param p: When scaling_method is 1 or 2, p is needed.
+    :param debug: If True, prints detailed intermediate results.
+    :return:
+    """
+    if per_label:
+        raise NotImplementedError('It is a little troubling, will be implemented later! Be patient.')
+
+    if method is None:
+        pass
+    elif 'online' in method:
+        pass
+    elif 'kmeans' in method:
+        pass
+    elif 'lvq' in method:
+        pass
+    else:
+        raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
+
+    if 'euclidean' in similarity:
+        pass
+    elif 'cosine' in similarity:
+        pass
+    else:
+        raise NotImplementedError('Only euclidean distance and cosine similarity are supported.')
+
+    if scaling_method == 1:
+        pass
+    elif scaling_method == 2:
+        pass
+    elif scaling_method == 3:
+        pass
+    elif scaling_method == 4:
+        pass
+    else:
+        raise NotImplementedError('Only four methods are supported. Please read the documentation.')
+
+    train_data_pattern = FLAGS.train_data_pattern
+    batch_size = FLAGS.batch_size
+    num_readers = FLAGS.num_readers
+    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
+    reader = get_reader(model_type, feature_names, feature_sizes)
+
+    # Create the graph to traverse all training data once.
+    with tf.Graph().as_default() as graph:
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+            get_input_data_tensors(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
+                                   num_readers=num_readers, num_epochs=1, name_scope='train_init_reader'))
+
+        # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    # Create a session for running operations in the Graph.
+    sess = tf.Session(graph=graph)
+
+    # Initialize the variables (like the epoch counter).
+    sess.run(init_op)
+
+    # Find num_centers_ratio of the total examples.
+    sample = []
+    # Start input enqueue threads.
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+    try:
+        while not coord.should_stop():
+            # Run training steps or whatever
+            video_batch_val = sess.run(video_batch)
+            num_videos = len(video_batch_val)
+            # print('length of video_batch: {}'.format(num_videos))
+            sample_size = max(int(num_videos * num_centers_ratio), 1)
+            # print('size of sample: {}'.format(sample_size))
+            rnd_indices = np.random.choice(num_videos, size=sample_size, replace=False)
+            rnd_examples = video_batch_val[rnd_indices]
+            print('magnitude of examples: {}'.format(np.linalg.norm(rnd_examples, ord=2, axis=1)))
+            # print('rnd_examples: {}'.format(rnd_examples))
+            sample.append(rnd_examples)
+
+            if debug:
+                coord.request_stop()
+
+    except tf.errors.OutOfRangeError:
+        print('Done training -- epoch limit reached')
+    finally:
+        # When done, ask the threads to stop.
+        coord.request_stop()
+
+    # Wait for threads to finish.
+    coord.join(threads)
+    sess.close()
+
+    # centers seeds.
+    initial_centers = np.concatenate(sample, axis=0)
+    print('initial_centers: {}'.format(initial_centers))
+
+    # Perform kmeans or online kmeans.
+
+    # Compute scaling factors based on these centers.
+
+
 def train(debug=False):
-    pass
+    initialize(0.005, debug=debug)
 
 
 def inference(out_file_location, top_k, debug=False):
@@ -106,6 +235,8 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_names', 'mean_rgb', 'Features to be used, separated by ,.')
 
     flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
+
+    flags.DEFINE_integer('num_centers', 20, 'The number of centers in RBF network.')
 
     # Set by the memory limit (52GB).
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
