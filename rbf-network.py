@@ -25,6 +25,7 @@ from inference import format_lines
 
 import pickle
 import numpy as np
+import scipy.spatial.distance as sci_distance
 
 FLAGS = flags.FLAGS
 
@@ -74,59 +75,32 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 
-def initialize(num_centers_ratio, per_label=False, method=None, similarity='euclidean',
-               scaling_method=1, alpha=0.1, p=3, debug=False):
+def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_method=1, alpha=0.1, p=3, debug=False):
     """
     This functions implements the following two phases:
     1. To initialize representative prototypes (RBF centers) c and scaling factors sigma.
     2. And to fit output weights.
 
+    This function will generate one group of centers for all labels as a whole. Be cautious with initialize_per_label.
+
     :param num_centers_ratio: The number of centers to be decided / total number of examples that belong to label l,
      for l = 0, ..., num_classes - 1.
-    :param per_label: Generate centers for all labels as a whole or L groups of centers for each label.
     :param method: The method to decide the centers. Possible choices are kmeans, online(kmeans), and lvq(learning).
      Default is None, which represents randomly selecting a certain number of examples as centers.
-    :param similarity: Similarity metric, euclidean distance or cosine similarity. Be cautious!!! Used when kmeans or
-     lvq is used.
+    :param metric: Distance metric, euclidean distance or cosine distance.
     :param scaling_method: There are four choices. 1, all of them use the same sigma, the p smallest pairs of distances.
-     2, average of p nearest centers. 3, the distance to the nearest center that has a different label.
+     2, average of p nearest centers. 3, the distance to the nearest center that has a different label (Not supported!).
      4, mean distance between this center and all of its points.
     :param alpha: The alpha parameter that should be set heuristically. It works like a learning rate. (mu in Zhang's)
     :param p: When scaling_method is 1 or 2, p is needed.
     :param debug: If True, prints detailed intermediate results.
     :return:
     """
-    if per_label:
-        raise NotImplementedError('It is a little troubling, will be implemented later! Be patient.')
-
-    if method is None:
-        pass
-    elif 'online' in method:
-        pass
-    elif 'kmeans' in method:
-        pass
-    elif 'lvq' in method:
-        pass
+    logging.info('Generate a group of centers for all labels. See Schwenker.')
+    if ('euclidean' == metric) or ('cosine' == metric):
+        logging.info('Using {} distance. The larger, the less similar.'.format(metric))
     else:
-        raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
-
-    if 'euclidean' in similarity:
-        pass
-    elif 'cosine' in similarity:
-        pass
-    else:
-        raise NotImplementedError('Only euclidean distance and cosine similarity are supported.')
-
-    if scaling_method == 1:
-        pass
-    elif scaling_method == 2:
-        pass
-    elif scaling_method == 3:
-        pass
-    elif scaling_method == 4:
-        pass
-    else:
-        raise NotImplementedError('Only four methods are supported. Please read the documentation.')
+        raise NotImplementedError('Only euclidean distance and cosine distance are supported.')
 
     train_data_pattern = FLAGS.train_data_pattern
     batch_size = FLAGS.batch_size
@@ -157,7 +131,6 @@ def initialize(num_centers_ratio, per_label=False, method=None, similarity='eucl
 
     try:
         while not coord.should_stop():
-            # Run training steps or whatever
             video_batch_val = sess.run(video_batch)
             num_videos = len(video_batch_val)
             # print('length of video_batch: {}'.format(num_videos))
@@ -165,7 +138,7 @@ def initialize(num_centers_ratio, per_label=False, method=None, similarity='eucl
             # print('size of sample: {}'.format(sample_size))
             rnd_indices = np.random.choice(num_videos, size=sample_size, replace=False)
             rnd_examples = video_batch_val[rnd_indices]
-            print('magnitude of examples: {}'.format(np.linalg.norm(rnd_examples, ord=2, axis=1)))
+            # print('magnitude of examples: {}'.format(np.linalg.norm(rnd_examples, ord=2, axis=1)))
             # print('rnd_examples: {}'.format(rnd_examples))
             sample.append(rnd_examples)
 
@@ -184,11 +157,67 @@ def initialize(num_centers_ratio, per_label=False, method=None, similarity='eucl
 
     # centers seeds.
     initial_centers = np.concatenate(sample, axis=0)
-    print('initial_centers: {}'.format(initial_centers))
+    # print('initial_centers: {}'.format(initial_centers))
+    num_initial_centers = len(initial_centers)
+    # print('Sampled {} centers totally'.format(num_initial_centers))
 
     # Perform kmeans or online kmeans.
+    if method is None:
+        pass
+    elif 'online' in method:
+        # TODO.
+        raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
+    elif 'kmeans' in method:
+        raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
+    elif 'lvq' in method:
+        raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
+    else:
+        raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
 
     # Compute scaling factors based on these centers.
+    if scaling_method == 1:
+        if ('euclidean' == metric) or ('cosine' == metric):
+            pairwise_distances = sci_distance.pdist(initial_centers, metric=metric)
+            p = min(p, len(pairwise_distances))
+            logging.info('Using {} minimal pairwise distances.'.format(p))
+            # np.partition begins with 1 instead of 0.
+            sigmas = [alpha * np.mean(np.partition(pairwise_distances, p - 1)[:p])] * num_initial_centers
+    elif scaling_method == 2:
+        p = min(p, num_initial_centers - 1)
+        logging.info('Using {} minimal pairwise distances.'.format(p))
+
+        if 'euclidean' == metric:
+            dis_fn = sci_distance.euclidean
+        else:
+            dis_fn = sci_distance.cosine
+
+        sigmas = []
+        for c in initial_centers:
+            distances = [dis_fn(c, _c) for _c in initial_centers]
+            # The distance between c and itself is zero and is in the left partition.
+            sigmas.append(alpha * np.sum(np.partition(distances, p)[:p + 1]) / float(p))
+    elif scaling_method == 3:
+        raise NotImplementedError('Not supported when all labels use the same centers.')
+    elif scaling_method == 4:
+        logging.info('Reuse results from kmeans or online kmeans.')
+        # TODO. Consider code repeatability.
+    else:
+        raise NotImplementedError('Only four methods are supported. Please read the documentation.')
+
+
+def initialize_per_label():
+    """
+    This functions implements the following two phases:
+    1. To initialize representative prototypes (RBF centers) c and scaling factors sigma.
+    2. And to fit output weights.
+
+    It is different from the function initialize because it will generate L groups of centers (one per each label)
+    instead of one group of centers for all labels as a whole.
+
+    :return:
+    """
+    # logging.error
+    raise NotImplementedError('It is a little troubling, will be implemented later! Be patient.')
 
 
 def train(debug=False):
