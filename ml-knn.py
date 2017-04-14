@@ -243,54 +243,54 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
 
 
 def store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder=''):
-    with open(folder + 'sum_labels.pickle', 'wb') as pickle_file:
+    with open(folder + '/sum_labels.pickle', 'wb') as pickle_file:
         pickle.dump(sum_labels, pickle_file)
 
-    with open(folder + 'accum_num_videos.pickle', 'wb') as pickle_file:
+    with open(folder + '/accum_num_videos.pickle', 'wb') as pickle_file:
         pickle.dump(accum_num_videos, pickle_file)
 
-    with open(folder + 'labels_prior_prob.pickle', 'wb') as pickle_file:
+    with open(folder + '/labels_prior_prob.pickle', 'wb') as pickle_file:
         pickle.dump(labels_prior_prob, pickle_file)
 
 
 def recover_prior_prob(folder=''):
-    with open(folder + 'sum_labels.pickle', 'rb') as pickle_file:
+    with open(folder + '/sum_labels.pickle', 'rb') as pickle_file:
         sum_labels = pickle.load(pickle_file)
 
-    with open(folder + 'accum_num_videos.pickle', 'rb') as pickle_file:
+    with open(folder + '/accum_num_videos.pickle', 'rb') as pickle_file:
         accum_num_videos = pickle.load(pickle_file)
 
-    with open(folder + 'labels_prior_prob.pickle', 'rb') as pickle_file:
+    with open(folder + '/labels_prior_prob.pickle', 'rb') as pickle_file:
         labels_prior_prob = pickle.load(pickle_file)
 
     return sum_labels, accum_num_videos, labels_prior_prob
 
 
 def store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, folder=''):
-    with open(folder + 'count_{}.pickle'.format(k), 'wb') as pickle_file:
+    with open(folder + '/count_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(count, pickle_file)
 
-    with open(folder + 'counter_count_{}.pickle'.format(k), 'wb') as pickle_file:
+    with open(folder + '/counter_count_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(counter_count, pickle_file)
 
-    with open(folder + 'pos_prob_positive_{}.pickle'.format(k), 'wb') as pickle_file:
+    with open(folder + '/pos_prob_positive_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(pos_prob_positive, pickle_file)
 
-    with open(folder + 'pos_prob_negative_{}.pickle'.format(k), 'wb') as pickle_file:
+    with open(folder + '/pos_prob_negative_{}.pickle'.format(k), 'wb') as pickle_file:
         pickle.dump(pos_prob_negative, pickle_file)
 
 
 def recover_posterior_prob(k, folder=''):
-    with open(folder + 'count_{}.pickle'.format(k), 'rb') as pickle_file:
+    with open(folder + '/count_{}.pickle'.format(k), 'rb') as pickle_file:
         count = pickle.load(pickle_file)
 
-    with open(folder + 'counter_count_{}.pickle'.format(k), 'rb') as pickle_file:
+    with open(folder + '/counter_count_{}.pickle'.format(k), 'rb') as pickle_file:
         counter_count = pickle.load(pickle_file)
 
-    with open(folder + 'pos_prob_positive_{}.pickle'.format(k), 'rb') as pickle_file:
+    with open(folder + '/pos_prob_positive_{}.pickle'.format(k), 'rb') as pickle_file:
         pos_prob_positive = pickle.load(pickle_file)
 
-    with open(folder + 'pos_prob_negative_{}.pickle'.format(k), 'rb') as pickle_file:
+    with open(folder + '/pos_prob_negative_{}.pickle'.format(k), 'rb') as pickle_file:
         pos_prob_negative = pickle.load(pickle_file)
 
     return count, counter_count, pos_prob_positive, pos_prob_negative
@@ -641,7 +641,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_boolean('verbosity', False, 'Whether print intermediate results, default no.')
 
-    flags.DEFINE_string('model_dir', '/tmp/ml-knn/',
+    flags.DEFINE_string('model_dir', '/tmp/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
