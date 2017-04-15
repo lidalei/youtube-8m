@@ -131,6 +131,9 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     """
 
     num_readers = FLAGS.num_readers
+    is_train = FLAGS.is_train
+    _k = (k + 1) if is_train else k
+
     # Create a new graph to compute k-nearest neighbors from video_batch_inner for each video of video_batch.
     with tf.Graph().as_default() as graph:
         # Generate example queue. Traverse the queue to traverse the dataset.
@@ -151,7 +154,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         # top k similar videos per video in video_batch_normalized.
         # values and indices are in shape [batch_size, k].
         # k = k + 1, to avoid the video itself.
-        topk_sim_op = tf.nn.top_k(similarities, k=k + 1)
+        topk_sim_op = tf.nn.top_k(similarities, k=_k)
 
         # Initialization.
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -184,15 +187,14 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                 batch_topk_video_labels = np.stack(
                     [video_labels_batch_inner_val[ind] for ind in batch_topk_sim_indices])
 
-                if verbosity:
-                    # Debug mode.
-                    print('video_id_batch: {}'.format(video_id_batch))
-                    print('batch_topk_sims: {}\nbatch_topk_sim_indices: {}'.format(batch_topk_sims,
-                                                                                   batch_topk_sim_indices))
-                    print('batch_topk_video_ids: {}\nbatch_topk_video_labels: {}'.format(batch_topk_video_ids,
-                                                                                         batch_topk_video_labels))
-
-                    coord.request_stop()
+                # if verbosity:
+                #     # Debug mode.
+                #     print('video_id_batch: {}'.format(video_id_batch))
+                #     print('batch_topk_sims: {}\nbatch_topk_sim_indices: {}'.format(batch_topk_sims,
+                #                                                                    batch_topk_sim_indices))
+                #     print('batch_topk_video_ids: {}\nbatch_topk_video_labels: {}'.format(batch_topk_video_ids,
+                #                                                                          batch_topk_video_labels))
+                #     coord.request_stop()
 
                 # Update top k similar videos.
                 if (topk_video_ids is None) or (topk_video_labels is None) or (topk_video_sims is None):
@@ -202,17 +204,17 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                     topk_video_sims = batch_topk_sims
                 else:
                     # Combine batch top k video ids and labels into current top k ids and labels.
-                    if verbosity:
-                        print('topk_video_ids shape: {}, batch_topk_video_ids shape: {}'.format(topk_video_ids.shape,
-                                                                                                batch_topk_video_ids.shape))
+                    # if verbosity:
+                    #     print('topk_video_ids shape: {}, batch_topk_video_ids shape: {}'.format(
+                    #         topk_video_ids.shape, batch_topk_video_ids.shape))
                     top2k_video_ids = np.concatenate((topk_video_ids, batch_topk_video_ids), axis=1)
-                    if verbosity:
-                        print('topk_video_labels shape: {}, batch_topk_video_labels shape: {}'.format(
-                            topk_video_labels.shape, batch_topk_video_labels.shape))
+                    # if verbosity:
+                    #     print('topk_video_labels shape: {}, batch_topk_video_labels shape: {}'.format(
+                    #         topk_video_labels.shape, batch_topk_video_labels.shape))
                     top_2k_video_labels = np.concatenate((topk_video_labels, batch_topk_video_labels), axis=1)
                     top2k_video_sims = np.concatenate((topk_video_sims, batch_topk_sims), axis=1)
                     # k=k+1, to exclude the example itself finally.
-                    topk_video_sims, topk_video_sims_indices = sess.run(tf.nn.top_k(top2k_video_sims, k=k + 1))
+                    topk_video_sims, topk_video_sims_indices = sess.run(tf.nn.top_k(top2k_video_sims, k=_k))
 
                     topk_video_ids = np.stack(
                         [top2k_video_ids[i, ind] for i, ind in enumerate(topk_video_sims_indices)])
@@ -229,17 +231,21 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         coord.join(threads)
         sess.close()
 
-    # Exclude the example itself if it exists.
-    clean_topk_video_ids, clean_topk_video_labels = [], []
-    for video_id, topk_video_id, topk_video_label in zip(video_id_batch, topk_video_ids, topk_video_labels):
-        if topk_video_id[0] == video_id:
-            clean_topk_video_ids.append(topk_video_id[1:])
-            clean_topk_video_labels.append(topk_video_label[1:])
-        else:
-            clean_topk_video_ids.append(topk_video_id[:k])
-            clean_topk_video_labels.append(topk_video_label[:k])
-
-    return np.stack(clean_topk_video_ids), np.stack(clean_topk_video_labels)
+    if is_train:
+        # Exclude the example itself if it exists.
+        # clean_topk_video_ids, clean_topk_video_labels = [], []
+        # for video_id, topk_video_id, topk_video_label in zip(video_id_batch, topk_video_ids, topk_video_labels):
+        #     if topk_video_id[0] == video_id:
+        #         clean_topk_video_ids.append(topk_video_id[1:])
+        #         clean_topk_video_labels.append(topk_video_label[1:])
+        #     else:
+        #         clean_topk_video_ids.append(topk_video_id[:k])
+        #         clean_topk_video_labels.append(topk_video_label[:k])
+        #
+        # return np.stack(clean_topk_video_ids), np.stack(clean_topk_video_labels)
+        return topk_video_ids[:, 1:], topk_video_labels[:, 1:]
+    else:
+        return topk_video_ids, topk_video_labels
 
 
 def store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder=''):
