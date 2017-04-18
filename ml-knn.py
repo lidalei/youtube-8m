@@ -160,7 +160,8 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
 
     # batch_size = int(video_id_batch.shape[0])
     # Define variables representing k nearest video_ids, video_labels and video_similarities.
-    topk_video_ids = None  # batch_size * [[]]
+    # Removed video_ids.
+    # topk_video_ids = None  # batch_size * [[]]
     # Variable-length labels.
     topk_video_labels = None  # batch_size * [[]]
     topk_video_sims = None  # batch_size * [[0.0] * k]
@@ -176,13 +177,17 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         try:
             while not coord.should_stop():
                 # Run results are numpy arrays.
-                video_id_batch_inner_val, video_labels_batch_inner_val, (
-                    batch_topk_sims, batch_topk_sim_indices) = sess.run(
-                    [video_id_batch_inner, video_labels_batch_inner, topk_sim_op])
+                # Removed video_ids.
+                # video_id_batch_inner_val, video_labels_batch_inner_val, (
+                #     batch_topk_sims, batch_topk_sim_indices) = sess.run(
+                #     [video_id_batch_inner, video_labels_batch_inner, topk_sim_op])
+                video_labels_batch_inner_val, (batch_topk_sims, batch_topk_sim_indices) = sess.run(
+                    [video_labels_batch_inner, topk_sim_op])
 
                 # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
                 # np.stack() can be np.array().
-                batch_topk_video_ids = np.stack([video_id_batch_inner_val[ind] for ind in batch_topk_sim_indices])
+                # Removed video_ids.
+                # batch_topk_video_ids = np.stack([video_id_batch_inner_val[ind] for ind in batch_topk_sim_indices])
                 batch_topk_video_labels = np.stack(
                     [video_labels_batch_inner_val[ind] for ind in batch_topk_sim_indices])
 
@@ -196,9 +201,12 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                 #     coord.request_stop()
 
                 # Update top k similar videos.
-                if (topk_video_ids is None) or (topk_video_labels is None) or (topk_video_sims is None):
+                # Removed video_ids.
+                # if (topk_video_ids is None) or (topk_video_labels is None) or (topk_video_sims is None):
+                if (topk_video_labels is None) or (topk_video_sims is None):
                     # The first batch.
-                    topk_video_ids = batch_topk_video_ids
+                    # Removed video_ids.
+                    # topk_video_ids = batch_topk_video_ids
                     topk_video_labels = batch_topk_video_labels
                     topk_video_sims = batch_topk_sims
                 else:
@@ -206,7 +214,8 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                     # if verbosity:
                     #     print('topk_video_ids shape: {}, batch_topk_video_ids shape: {}'.format(
                     #         topk_video_ids.shape, batch_topk_video_ids.shape))
-                    top2k_video_ids = np.concatenate((topk_video_ids, batch_topk_video_ids), axis=1)
+                    # Removed video_ids.
+                    # top2k_video_ids = np.concatenate((topk_video_ids, batch_topk_video_ids), axis=1)
                     # if verbosity:
                     #     print('topk_video_labels shape: {}, batch_topk_video_labels shape: {}'.format(
                     #         topk_video_labels.shape, batch_topk_video_labels.shape))
@@ -215,8 +224,9 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                     # k=k+1, to exclude the example itself finally.
                     topk_video_sims, topk_video_sims_indices = sess.run(tf.nn.top_k(top2k_video_sims, k=_k))
 
-                    topk_video_ids = np.stack(
-                        [top2k_video_ids[i, ind] for i, ind in enumerate(topk_video_sims_indices)])
+                    # Removed video_ids.
+                    # topk_video_ids = np.stack(
+                    #     [top2k_video_ids[i, ind] for i, ind in enumerate(topk_video_sims_indices)])
                     topk_video_labels = np.stack(
                         [top_2k_video_labels[i, ind] for i, ind in enumerate(topk_video_sims_indices)])
 
@@ -242,9 +252,13 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         #         clean_topk_video_labels.append(topk_video_label[:k])
         #
         # return np.stack(clean_topk_video_ids), np.stack(clean_topk_video_labels)
-        return topk_video_ids[:, 1:], topk_video_labels[:, 1:]
+        # Removed video_ids.
+        # return topk_video_ids[:, 1:], topk_video_labels[:, 1:]
+        return None, topk_video_labels[:, 1:]
     else:
-        return topk_video_ids, topk_video_labels
+        # Removed video_ids.
+        # return topk_video_ids, topk_video_labels
+        return None, topk_video_labels
 
 
 def store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder=''):
