@@ -7,7 +7,6 @@ import tensorflow as tf
 import time
 
 from readers import get_reader
-import utils
 from tensorflow import flags, gfile, logging, app
 from inference import format_lines
 
@@ -261,13 +260,22 @@ def store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder='')
 
 def recover_prior_prob(folder=''):
     with open(folder + '/sum_labels.pickle', 'rb') as pickle_file:
-        sum_labels = pickle.load(pickle_file)
+        try:
+            sum_labels = pickle.load(pickle_file)
+        except:
+            sum_labels = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
     with open(folder + '/accum_num_videos.pickle', 'rb') as pickle_file:
-        accum_num_videos = pickle.load(pickle_file)
+        try:
+            accum_num_videos = pickle.load(pickle_file)
+        except:
+            accum_num_videos = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
     with open(folder + '/labels_prior_prob.pickle', 'rb') as pickle_file:
-        labels_prior_prob = pickle.load(pickle_file)
+        try:
+            labels_prior_prob = pickle.load(pickle_file)
+        except:
+            labels_prior_prob = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
     return sum_labels, accum_num_videos, labels_prior_prob
 
@@ -288,16 +296,28 @@ def store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negat
 
 def recover_posterior_prob(k, folder=''):
     with open(folder + '/count_{}.pickle'.format(k), 'rb') as pickle_file:
-        count = pickle.load(pickle_file)
+        try:
+            count = pickle.load(pickle_file)
+        except:
+            count = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
     with open(folder + '/counter_count_{}.pickle'.format(k), 'rb') as pickle_file:
-        counter_count = pickle.load(pickle_file)
+        try:
+            counter_count = pickle.load(pickle_file)
+        except:
+            counter_count = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
     with open(folder + '/pos_prob_positive_{}.pickle'.format(k), 'rb') as pickle_file:
-        pos_prob_positive = pickle.load(pickle_file)
+        try:
+            pos_prob_positive = pickle.load(pickle_file)
+        except:
+            pos_prob_positive = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
     with open(folder + '/pos_prob_negative_{}.pickle'.format(k), 'rb') as pickle_file:
-        pos_prob_negative = pickle.load(pickle_file)
+        try:
+            pos_prob_negative = pickle.load(pickle_file)
+        except:
+            pos_prob_negative = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
     return count, counter_count, pos_prob_positive, pos_prob_negative
 
