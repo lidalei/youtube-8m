@@ -28,6 +28,10 @@ import numpy as np
 import scipy.spatial.distance as sci_distance
 
 FLAGS = flags.FLAGS
+NUM_TRAIN_EXAMPLES = 4906660
+# TODO
+NUM_VALIDATE_EXAMPLES = None
+NUM_TEST_EXAMPLES = 700640
 
 
 def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_epochs=1, name_scope='input'):
@@ -75,6 +79,58 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 
+def kmeans(initial_centers, reader, data_pattern, batch_size, num_readers):
+    """
+    k-means clustering.
+
+    :param initial_centers: A list of centers.
+    :param reader: Video-level features reader or frame-level features reader.
+    :param data_pattern: tf data Glob.
+    :return: Optimized centers and corresponding average cluster-center distance.
+    """
+
+    graph = tf.Graph()
+    # Create the graph to traverse all training data once.
+    with graph.as_default():
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+            get_input_data_tensors(reader=reader, data_pattern=data_pattern, batch_size=batch_size,
+                                   num_readers=num_readers, num_epochs=1, name_scope='train_init_reader'))
+
+        # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    graph.finalize()
+
+    with tf.Session(graph=graph) as sess:
+        sess.run(init_op)
+
+        # Start input enqueue threads.
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+        try:
+            while not coord.should_stop():
+                video_batch_val = sess.run(video_batch)
+
+        except tf.errors.OutOfRangeError:
+            print('One epoch limit reached.')
+        finally:
+            # When done, ask the threads to stop.
+            coord.request_stop()
+
+        # Wait for threads to finish.
+        coord.join(threads)
+        sess.close()
+
+
+def mini_batch_kmeans():
+    pass
+
+
+def dbscan():
+    pass
+
+
 def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_method=1, alpha=0.1, p=3, debug=False):
     """
     This functions implements the following two phases:
@@ -97,6 +153,10 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
     :return:
     """
     logging.info('Generate a group of centers for all labels. See Schwenker.')
+    if num_centers_ratio <= 0.0 or num_centers_ratio >= 1.0:
+        raise ValueError('num_centers_ratio must be larger than 0.0 and no greater than 1.0.')
+
+    logging.info('num_centers_ratio is {}.'.format(num_centers_ratio))
     if ('euclidean' == metric) or ('cosine' == metric):
         logging.info('Using {} distance. The larger, the less similar.'.format(metric))
     else:
@@ -106,6 +166,7 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
+
     reader = get_reader(model_type, feature_names, feature_sizes)
 
     # Create the graph to traverse all training data once.
@@ -113,6 +174,11 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
             get_input_data_tensors(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
                                    num_readers=num_readers, num_epochs=1, name_scope='train_init_reader'))
+
+        num_batch_videos = tf.shape(video_batch)[0]
+        rnd_nums = tf.random_uniform([num_batch_videos])
+        sample_mask = tf.less_equal(rnd_nums, num_centers_ratio)
+        partial_sample = tf.boolean_mask(video_batch, sample_mask)
 
         # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -131,19 +197,16 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
 
     try:
         while not coord.should_stop():
-            video_batch_val = sess.run(video_batch)
-            num_videos = len(video_batch_val)
-            # print('length of video_batch: {}'.format(num_videos))
-            sample_size = max(int(num_videos * num_centers_ratio), 1)
-            # print('size of sample: {}'.format(sample_size))
-            rnd_indices = np.random.choice(num_videos, size=sample_size, replace=False)
-            rnd_examples = video_batch_val[rnd_indices]
-            # print('magnitude of examples: {}'.format(np.linalg.norm(rnd_examples, ord=2, axis=1)))
-            # print('rnd_examples: {}'.format(rnd_examples))
-            sample.append(rnd_examples)
+            num_batch_videos_val, partial_sample_val = sess.run([num_batch_videos, partial_sample])
+            # print('length of video_batch: {}'.format(num_batch_videos_val))
+            # print('partial_sample_val: {}'.format(partial_sample_val))
+            # print('magnitude of examples: {}'.format(np.linalg.norm(partial_sample_val, ord=2, axis=1)))
 
-            if debug:
-                coord.request_stop()
+            if partial_sample_val.size > 0:
+                sample.append(partial_sample_val)
+
+            # if debug:
+            #     coord.request_stop()
 
     except tf.errors.OutOfRangeError:
         print('Done training -- epoch limit reached')
@@ -157,13 +220,14 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
 
     # centers seeds.
     initial_centers = np.concatenate(sample, axis=0)
+    logging.info('initial_centers has shape: '.format(initial_centers.shape))
     # print('initial_centers: {}'.format(initial_centers))
     num_initial_centers = len(initial_centers)
-    # print('Sampled {} centers totally'.format(num_initial_centers))
+    print('Sampled {} centers totally'.format(num_initial_centers))
 
     # Perform kmeans or online kmeans.
     if method is None:
-        pass
+        logging.info('Using randomly selected initial centers as model prototypes (centers).')
     elif 'online' in method:
         # TODO.
         raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
@@ -216,12 +280,17 @@ def initialize_per_label():
 
     :return:
     """
+    # Must consider the labels are super imbalanced! The counts are stored in 'sum_labels.pickle' with Python3 protocol.
     # logging.error
     raise NotImplementedError('It is a little troubling, will be implemented later! Be patient.')
 
 
 def train(debug=False):
-    initialize(0.005, debug=debug)
+    num_centers_ratio = FLAGS.num_centers_ratio
+
+    # num_centers = FLAGS.num_centers
+    # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
+    initialize(num_centers_ratio, debug=debug)
 
 
 def inference(out_file_location, top_k, debug=False):
@@ -265,7 +334,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
 
-    flags.DEFINE_integer('num_centers', 20, 'The number of centers in RBF network.')
+    flags.DEFINE_float('num_centers_ratio', 0.01, 'The number of centers in RBF network.')
 
     # Set by the memory limit (52GB).
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
@@ -282,7 +351,7 @@ if __name__ == '__main__':
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
     # TODO, change it.
-    flags.DEFINE_boolean('is_debug', False, 'Boolean variable to indicate debug ot not.')
+    flags.DEFINE_boolean('is_debug', True, 'Boolean variable to indicate debug ot not.')
 
     flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
