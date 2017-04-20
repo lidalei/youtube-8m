@@ -79,22 +79,86 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 
-def kmeans(initial_centers, reader, data_pattern, batch_size, num_readers):
+def kmeans(centers, reader, data_pattern, batch_size, num_readers, metric='euclidean'):
     """
     k-means clustering.
 
-    :param initial_centers: A list of centers.
+    :param centers: A list of centers (as a numpy array).
     :param reader: Video-level features reader or frame-level features reader.
     :param data_pattern: tf data Glob.
+    :param batch_size: How many examples to read per batch.
+    :param num_readers: How many IO threads to read examples.
+    :param metric: Distance metric, support euclidean and cosine.
     :return: Optimized centers and corresponding average cluster-center distance.
     """
+    num_centers = len(centers)
+    if num_centers >= 40000:
+        logging.warn('Too many ({}) initial centers which can not be held in a tf graph.'.format(num_centers))
+
+    if (metric == 'euclidean') or (metric == 'cosine'):
+        logging.info('Using {} distance.'.format(metric))
+    else:
+        raise NotImplementedError('Only euclidean and cosine distance metrics are supported.')
 
     graph = tf.Graph()
     # Create the graph to traverse all training data once.
     with graph.as_default():
+        # Keep current centers in graph.
+        current_centers = tf.constant(centers, dtype=tf.float32, name='current_centers')
+
+        # Objective function.
+        total_distance = tf.Variable(initial_value=0, dtype=tf.float32, name='total_distance')
+        # Define new centers as Variable.
+        new_centers_sum = tf.Variable(initial_value=tf.zeros_like(current_centers), dtype=tf.float32)
+        new_centers_count = tf.Variable(initial_value=tf.zeros_like(current_centers), dtype=tf.float32)
+        # Construct data read pipeline.
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
             get_input_data_tensors(reader=reader, data_pattern=data_pattern, batch_size=batch_size,
-                                   num_readers=num_readers, num_epochs=1, name_scope='train_init_reader'))
+                                   num_readers=num_readers, num_epochs=1, name_scope='k_means_reader'))
+
+        # Assign video batch to current centers (clusters).
+        if metric == 'euclidean':
+            # Make use of broadcasting feature.
+            expanded_current_centers = tf.expand_dims(current_centers, axis=0)
+            expanded_video_batch = tf.expand_dims(video_batch, axis=1)
+
+            sub = tf.subtract(expanded_video_batch, expanded_current_centers)
+            # element-wise square.
+            squared_sub = tf.square(sub)
+            # Compute distances with centers video-wisely. Shape [batch_size, num_initial_centers]. negative === -.
+            # TODO, sqrt can be omitted.
+            minus_dist = tf.negative(tf.sqrt(tf.reduce_sum(squared_sub, axis=-1)))
+            # Compute assignments and the distance with nearest centers video-wisely.
+            minus_nearest_dist, topk_assignments = tf.nn.top_k(minus_dist, k=1)
+            nearest_dist = tf.negative(minus_nearest_dist)
+            # Remove the last dimension due to k.
+            assignments = tf.squeeze(topk_assignments, axis=[-1])
+
+            # Compute new centers sum and number of videos that belong to each center (cluster) with this video batch.
+            sum_per_clu = tf.unsorted_segment_sum(video_batch, assignments, num_centers)
+            count_per_clu = tf.unsorted_segment_sum(tf.ones_like(video_batch, dtype=tf.float32),
+                                                    assignments, num_centers)
+
+        else:
+            # TODO, put this as the constant, computed by numpy beforehand.
+            normalized_current_centers = tf.nn.l2_normalize(current_centers, -1)
+            normalized_video_batch = tf.nn.l2_normalize(video_batch, -1)
+            cosine_sim = tf.matmul(normalized_video_batch, normalized_current_centers, transpose_b=True)
+            nearest_cosine_sim, topk_assignments = tf.nn.top_k(cosine_sim, k=1)
+            nearest_dist = tf.subtract(1.0, nearest_cosine_sim)
+            # Remove the last dimension due to k.
+            assignments = tf.squeeze(topk_assignments, axis=[-1])
+
+            # Compute new centers sum and number of videos that belong to each center (cluster) with this video batch.
+            sum_per_clu = tf.unsorted_segment_sum(normalized_video_batch, assignments, num_centers)
+            count_per_clu = tf.unsorted_segment_sum(tf.ones_like(normalized_video_batch), assignments, num_centers)
+
+        # Update total distance, namely objective function.
+        total_batch_dist = tf.reduce_sum(nearest_dist)
+        update_total_distance = tf.assign_add(total_distance, total_batch_dist)
+
+        update_new_centers_sum = tf.assign_add(new_centers_sum, sum_per_clu)
+        update_new_centers_count = tf.assign_add(new_centers_count, count_per_clu)
 
         # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -110,10 +174,11 @@ def kmeans(initial_centers, reader, data_pattern, batch_size, num_readers):
 
         try:
             while not coord.should_stop():
-                video_batch_val = sess.run(video_batch)
+                accum_distance, accum_new_centers_sum, accum_new_centers_count = sess.run(
+                    [update_total_distance, update_new_centers_sum, update_new_centers_count])
 
         except tf.errors.OutOfRangeError:
-            print('One epoch limit reached.')
+            logging.info('One k-means iteration done. One epoch limit reached.')
         finally:
             # When done, ask the threads to stop.
             coord.request_stop()
@@ -121,6 +186,9 @@ def kmeans(initial_centers, reader, data_pattern, batch_size, num_readers):
         # Wait for threads to finish.
         coord.join(threads)
         sess.close()
+
+        # Numpy array divide element-wisely.
+        return (accum_new_centers_sum / accum_new_centers_count), accum_distance
 
 
 def mini_batch_kmeans():
@@ -197,6 +265,7 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
 
     try:
         while not coord.should_stop():
+            # TODO, remove num_batch_videos_val and num_batch_videos.
             num_batch_videos_val, partial_sample_val = sess.run([num_batch_videos, partial_sample])
             # print('length of video_batch: {}'.format(num_batch_videos_val))
             # print('partial_sample_val: {}'.format(partial_sample_val))
@@ -209,7 +278,7 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
             #     coord.request_stop()
 
     except tf.errors.OutOfRangeError:
-        print('Done training -- epoch limit reached')
+        logging.info('Done training -- epoch limit reached.')
     finally:
         # When done, ask the threads to stop.
         coord.request_stop()
@@ -220,20 +289,22 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
 
     # centers seeds.
     initial_centers = np.concatenate(sample, axis=0)
-    logging.info('initial_centers has shape: '.format(initial_centers.shape))
+    logging.info('initial_centers has shape: {}.'.format(initial_centers.shape))
     # print('initial_centers: {}'.format(initial_centers))
     num_initial_centers = len(initial_centers)
-    print('Sampled {} centers totally'.format(num_initial_centers))
+    print('Sampled {} centers totally.'.format(num_initial_centers))
 
     # Perform kmeans or online kmeans.
     if method is None:
         logging.info('Using randomly selected initial centers as model prototypes (centers).')
-    elif 'online' in method:
+    elif 'online' == method:
         # TODO.
         raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
-    elif 'kmeans' in method:
-        raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
-    elif 'lvq' in method:
+    elif 'kmeans' == method:
+        logging.info('Using k-means clustering result as model prototypes (centers).')
+        iter_reader = get_reader(model_type, feature_names, feature_sizes)
+        kmeans(initial_centers, iter_reader, train_data_pattern, batch_size, num_readers, metric='euclidean')
+    elif 'lvq' == method:
         raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
     else:
         raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
@@ -290,7 +361,7 @@ def train(debug=False):
 
     # num_centers = FLAGS.num_centers
     # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
-    initialize(num_centers_ratio, debug=debug)
+    initialize(num_centers_ratio, method='kmeans', debug=debug)
 
 
 def inference(out_file_location, top_k, debug=False):
@@ -304,6 +375,8 @@ def main(unused_argv):
 
     output_file = FLAGS.output_file
     top_k = FLAGS.top_k
+
+    logging.set_verbosity(logging.INFO)
 
     if is_train:
         if is_tuning_hyper_para:
