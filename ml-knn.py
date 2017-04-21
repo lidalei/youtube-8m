@@ -61,13 +61,12 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 
-def compute_prior_prob(reader, data_pattern, smooth_para=1, verbosity=False):
+def compute_prior_prob(reader, data_pattern, smooth_para=1):
     """
     Compute prior probabilities for future use in ml-knn.
     :param reader:
     :param data_pattern:
     :param smooth_para:
-    :param verbosity:
     :return: (total number of labels per label, total number of videos processed, prior probabilities)
     """
     batch_size = FLAGS.batch_size
@@ -109,29 +108,32 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1, verbosity=False):
 
     labels_prior_prob_val = (smooth_para + sum_labels_val) / (smooth_para * 2 + accum_num_videos_val)
 
-    if verbosity:
-        print('sum_labels_val: {}\n accum_num_videos_val: {}'.format(sum_labels_val, accum_num_videos_val))
-        print('compute_labels_prob: {}'.format(labels_prior_prob_val))
+    logging.debug('sum_labels_val: {}\n accum_num_videos_val: {}'.format(sum_labels_val, accum_num_videos_val))
+    logging.debug('compute_labels_prob: {}'.format(labels_prior_prob_val))
 
     return sum_labels_val, accum_num_videos_val, labels_prior_prob_val
 
 
-def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, batch_size=8192, k=3, verbosity=True):
+def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, batch_size=8192, k=3, debug=False):
     """
     Return k-nearest neighbors. https://www.tensorflow.org/programmers_guide/reading_data.
+
     :param video_id_batch: Must be a value.
     :param video_batch: Must be a value.
     :param reader:
     :param data_pattern:
     :param batch_size:
     :param k:
-    :param verbosity:
+    :param debug:
     :return: k-nearest videos, representing by (video_ids, video_labels)
     """
 
     num_readers = FLAGS.num_readers
     is_train = FLAGS.is_train
     _k = (k + 1) if is_train else k
+
+    # normalization video batch along the last dimension.
+    video_batch_normalized = video_batch / np.clip(np.linalg.norm(video_batch, axis=-1, keepdims=True), 1e-6, np.PINF)
 
     # Create a new graph to compute k-nearest neighbors from video_batch_inner for each video of video_batch.
     with tf.Graph().as_default() as graph:
@@ -142,11 +144,9 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                 reader=reader, data_pattern=data_pattern, batch_size=batch_size,
                 num_readers=num_readers, num_epochs=1, name_scope='inner_loop'))
 
-        # normalization
-        feature_dim = len(video_batch_inner.get_shape()) - 1
-
-        video_batch_normalized = tf.nn.l2_normalize(video_batch, feature_dim)
-        video_batch_inner_normalized = tf.nn.l2_normalize(video_batch_inner, feature_dim)
+        # normalization along the last dimension.
+        # video_batch_normalized = tf.nn.l2_normalize(video_batch, dim=-1)
+        video_batch_inner_normalized = tf.nn.l2_normalize(video_batch_inner, dim=-1)
 
         # compute cosine similarities
         similarities = tf.matmul(video_batch_normalized, video_batch_inner_normalized, transpose_b=True)
@@ -191,7 +191,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                 batch_topk_video_labels = np.stack(
                     [video_labels_batch_inner_val[ind] for ind in batch_topk_sim_indices])
 
-                # if verbosity:
+                # if debug:
                 #     # Debug mode.
                 #     print('video_id_batch: {}'.format(video_id_batch))
                 #     print('batch_topk_sims: {}\nbatch_topk_sim_indices: {}'.format(batch_topk_sims,
@@ -211,12 +211,12 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                     topk_video_sims = batch_topk_sims
                 else:
                     # Combine batch top k video ids and labels into current top k ids and labels.
-                    # if verbosity:
+                    # if debug:
                     #     print('topk_video_ids shape: {}, batch_topk_video_ids shape: {}'.format(
                     #         topk_video_ids.shape, batch_topk_video_ids.shape))
                     # Removed video_ids.
                     # top2k_video_ids = np.concatenate((topk_video_ids, batch_topk_video_ids), axis=1)
-                    # if verbosity:
+                    # if debug:
                     #     print('topk_video_labels shape: {}, batch_topk_video_labels shape: {}'.format(
                     #         topk_video_labels.shape, batch_topk_video_labels.shape))
                     top_2k_video_labels = np.concatenate((topk_video_labels, batch_topk_video_labels), axis=1)
@@ -342,7 +342,6 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
 
     batch_size = 1024 if debug else FLAGS.batch_size
     num_readers = 1 if debug else FLAGS.num_readers
-    verbosity = FLAGS.verbosity
     model_dir = FLAGS.model_dir
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
@@ -402,18 +401,17 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
             video_id_batch_val, video_batch_val, video_labels_batch_val = sess.run(
                 [video_id_batch, video_batch, video_labels_batch])
 
-            if debug or verbosity:
-                print('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
+            logging.debug('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val,
+                                                                               video_batch_val))
 
             # Pass values instead of tensors.
             topk_video_ids, topk_video_labels = find_k_nearest_neighbors(video_id_batch_val,
                                                                          video_batch_val, inner_reader,
                                                                          data_pattern=train_data_pattern,
                                                                          batch_size=batch_size,
-                                                                         k=k, verbosity=False)
+                                                                         k=k, debug=False)
 
-            if debug or verbosity:
-                print('topk_video_ids: {}\ntopk_video_labels: {}'.format(topk_video_ids, topk_video_labels))
+            logging.debug('topk_video_ids: {}\ntopk_video_labels: {}'.format(topk_video_ids, topk_video_labels))
             # Update count and counter_count.
             # batch_size * delta.
             deltas = topk_video_labels.astype(np.int32).sum(axis=1)
@@ -423,8 +421,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
                 count[delta, range_num_classes] += inc
                 counter_count[delta, range_num_classes] += 1 - inc
 
-            if debug or verbosity:
-                print('count: {}\ncounter_count: {}'.format(count, counter_count))
+            logging.debug('count: {}\ncounter_count: {}'.format(count, counter_count))
 
             if debug:
                 coord.request_stop()
@@ -432,7 +429,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
             global_step_val, summary = sess.run([global_step_inc_op, summary_op])
             now = time.time()
             num_examples_processed += video_id_batch_val.shape[0]
-            print('Batch processing step: {}, elapsed seconds: {}, total number of examples processed: {}'.format(
+            logging.info('Batch processing step: {}, elapsed: {} s, total number of examples processed: {}'.format(
                 global_step_val, now - start_time, num_examples_processed))
 
             writer.add_summary(summary, global_step=global_step_val)
@@ -470,7 +467,6 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
     test_data_pattern = '/Users/Sophie/Documents/youtube-8m-data/test/test4a.tfrecord' \
         if debug else FLAGS.test_data_pattern
 
-    verbosity = FLAGS.verbosity
     model_dir = FLAGS.model_dir
     batch_size = 1024 if debug else FLAGS.batch_size
     num_readers = 1 if debug else FLAGS.num_readers
@@ -514,7 +510,7 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
                 video_id_batch_val, video_batch_val, video_labels_batch_val = sess.run(
                     [video_id_batch, video_batch, video_labels_batch])
 
-                if debug or verbosity:
+                if debug:
                     print('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
 
                 # Pass values instead of tensors.
@@ -522,9 +518,9 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
                                                                              video_batch_val, inner_reader,
                                                                              data_pattern=train_data_pattern,
                                                                              batch_size=batch_size,
-                                                                             k=k, verbosity=False)
+                                                                             k=k, debug=False)
 
-                if debug or verbosity:
+                if debug:
                     print('topk_video_ids: {}\ntopk_video_labels: {}'.format(topk_video_ids, topk_video_labels))
                 # batch_size * delta.
                 deltas = topk_video_labels.astype(np.int32).sum(axis=1)
@@ -645,6 +641,8 @@ def main(unused_argv):
     output_file = FLAGS.output_file
     top_k = FLAGS.top_k
 
+    logging.set_verbosity(logging.INFO)
+
     if is_train:
         if is_tuning_hyper_para:
             # TODO, implement.
@@ -679,8 +677,6 @@ if __name__ == '__main__':
     flags.DEFINE_integer('batch_size', 24576, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 4, 'Number of readers to form a batch.')
 
-    flags.DEFINE_boolean('verbosity', False, 'Whether print intermediate results, default no.')
-
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
 
@@ -690,7 +686,7 @@ if __name__ == '__main__':
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
     # TODO, change it.
-    flags.DEFINE_boolean('is_debug', False, 'Boolean variable to indicate debug ot not.')
+    flags.DEFINE_boolean('is_debug', True, 'Boolean variable to indicate debug ot not.')
 
     flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
