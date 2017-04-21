@@ -145,7 +145,7 @@ def random_sample(sample_ratio, reader, data_pattern, batch_size, num_readers):
     return a_sample
 
 
-def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='euclidean'):
+def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='cosine', return_mean_clu_dist=False):
     """
     k-means clustering one iteration.
 
@@ -155,14 +155,15 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
     :param batch_size: How many examples to read per batch.
     :param num_readers: How many IO threads to read examples.
     :param metric: Distance metric, support euclidean and cosine.
-    :return: Optimized centers and corresponding average cluster-center distance.
+    :param return_mean_clu_dist: boolean. If True, compute mean distance per cluster. Else, return None.
+    :return: Optimized centers and corresponding average cluster-center distance and mean distance per cluster.
     """
     num_centers = len(centers)
     if num_centers >= 40000:
         logging.warn('Too many ({}) initial centers which can not be held in a tf graph.'.format(num_centers))
 
     if (metric == 'euclidean') or (metric == 'cosine'):
-        logging.info('Using {} distance.'.format(metric))
+        logging.info('Perform k-means clustering using {} distance.'.format(metric))
     else:
         raise NotImplementedError('Only euclidean and cosine distance metrics are supported.')
 
@@ -177,10 +178,13 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
             current_centers = tf.constant(normalized_centers, dtype=tf.float32, name='current_centers')
 
         # Objective function. TODO, avoid overflow in initial iteration.
-        total_distance = tf.Variable(initial_value=0, dtype=tf.float32, name='total_distance')
+        total_dist = tf.Variable(initial_value=0, dtype=tf.float32, name='total_distance')
         # Define new centers as Variable.
-        new_centers_sum = tf.Variable(initial_value=tf.zeros_like(current_centers), dtype=tf.float32)
-        new_centers_count = tf.Variable(initial_value=tf.zeros_like(current_centers), dtype=tf.float32)
+        per_clu_sum = tf.Variable(initial_value=tf.zeros_like(centers), dtype=tf.float32)
+        per_clu_count = tf.Variable(initial_value=tf.zeros([num_centers]), dtype=tf.float32)
+        if return_mean_clu_dist:
+            per_clu_total_dist = tf.Variable(initial_value=tf.zeros([num_centers]))
+
         # Construct data read pipeline.
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
             get_input_data_tensors(reader=reader, data_pattern=data_pattern, batch_size=batch_size,
@@ -196,37 +200,43 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
             # element-wise square.
             squared_sub = tf.square(sub)
             # Compute distances with centers video-wisely. Shape [batch_size, num_initial_centers]. negative === -.
-            # TODO, sqrt can be omitted.
             minus_dist = tf.negative(tf.sqrt(tf.reduce_sum(squared_sub, axis=-1)))
             # Compute assignments and the distance with nearest centers video-wisely.
-            minus_nearest_dist, topk_assignments = tf.nn.top_k(minus_dist, k=1)
-            nearest_dist = tf.negative(minus_nearest_dist)
+            minus_topk_nearest_dist, topk_assignments = tf.nn.top_k(minus_dist, k=1)
+            nearest_topk_dist = tf.negative(minus_topk_nearest_dist)
             # Remove the last dimension due to k.
+            nearest_dist = tf.squeeze(nearest_topk_dist, axis=[-1])
             assignments = tf.squeeze(topk_assignments, axis=[-1])
 
             # Compute new centers sum and number of videos that belong to each center (cluster) with this video batch.
-            sum_per_clu = tf.unsorted_segment_sum(video_batch, assignments, num_centers)
-            count_per_clu = tf.unsorted_segment_sum(tf.ones_like(video_batch, dtype=tf.float32),
-                                                    assignments, num_centers)
+            batch_per_clu_sum = tf.unsorted_segment_sum(video_batch, assignments, num_centers)
 
         else:
             normalized_video_batch = tf.nn.l2_normalize(video_batch, -1)
             cosine_sim = tf.matmul(normalized_video_batch, current_centers, transpose_b=True)
-            nearest_cosine_sim, topk_assignments = tf.nn.top_k(cosine_sim, k=1)
-            nearest_dist = tf.subtract(1.0, nearest_cosine_sim)
+            nearest_topk_cosine_sim, topk_assignments = tf.nn.top_k(cosine_sim, k=1)
+            nearest_topk_dist = tf.subtract(1.0, nearest_topk_cosine_sim)
             # Remove the last dimension due to k.
+            nearest_dist = tf.squeeze(nearest_topk_dist, axis=[-1])
             assignments = tf.squeeze(topk_assignments, axis=[-1])
 
             # Compute new centers sum and number of videos that belong to each center (cluster) with this video batch.
-            sum_per_clu = tf.unsorted_segment_sum(normalized_video_batch, assignments, num_centers)
-            count_per_clu = tf.unsorted_segment_sum(tf.ones_like(normalized_video_batch), assignments, num_centers)
+            batch_per_clu_sum = tf.unsorted_segment_sum(normalized_video_batch, assignments, num_centers)
 
+        batch_per_clu_count = tf.unsorted_segment_sum(tf.ones_like(video_id_batch, dtype=tf.float32),
+                                                      assignments, num_centers)
         # Update total distance, namely objective function.
-        total_batch_dist = tf.reduce_sum(nearest_dist)
-        update_total_distance = tf.assign_add(total_distance, total_batch_dist)
+        if return_mean_clu_dist:
+            batch_per_clu_total_dist = tf.unsorted_segment_sum(nearest_dist, assignments, num_centers)
+            update_per_clu_total_dist = tf.assign_add(per_clu_total_dist, batch_per_clu_total_dist)
 
-        update_new_centers_sum = tf.assign_add(new_centers_sum, sum_per_clu)
-        update_new_centers_count = tf.assign_add(new_centers_count, count_per_clu)
+            total_batch_dist = tf.reduce_sum(batch_per_clu_total_dist)
+        else:
+            total_batch_dist = tf.reduce_sum(nearest_dist)
+
+        update_total_dist = tf.assign_add(total_dist, total_batch_dist)
+        update_per_clu_sum = tf.assign_add(per_clu_sum, batch_per_clu_sum)
+        update_per_clu_count = tf.assign_add(per_clu_count, batch_per_clu_count)
 
         # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -236,27 +246,53 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
     sess = tf.Session(graph=graph)
     sess.run(init_op)
 
+    # Define to avoid warning.
+    accum_total_dist = None
+    accum_per_clu_sum = None
+    accum_per_clu_count = None
+    accum_per_clu_total_dist = None
+
     # Start input enqueue threads.
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-    try:
-        while not coord.should_stop():
-            accum_distance, accum_new_centers_sum, accum_new_centers_count = sess.run(
-                [update_total_distance, update_new_centers_sum, update_new_centers_count])
+    # TODO, deal with empty cluster situation.
+    if return_mean_clu_dist:
+        try:
+            while not coord.should_stop():
+                accum_total_dist, accum_per_clu_sum, accum_per_clu_count, accum_per_clu_total_dist = sess.run(
+                    [update_total_dist, update_per_clu_sum, update_per_clu_count, update_per_clu_total_dist])
 
-    except tf.errors.OutOfRangeError:
-        logging.info('One k-means iteration done. One epoch limit reached.')
-    finally:
-        # When done, ask the threads to stop.
-        coord.request_stop()
+        except tf.errors.OutOfRangeError:
+            logging.info('One k-means iteration done. One epoch limit reached.')
+        finally:
+            # When done, ask the threads to stop.
+            coord.request_stop()
+    else:
+        try:
+            while not coord.should_stop():
+                accum_total_dist, accum_per_clu_sum, accum_per_clu_count = sess.run(
+                    [update_total_dist, update_per_clu_sum, update_per_clu_count])
+
+        except tf.errors.OutOfRangeError:
+            logging.info('One k-means iteration done. One epoch limit reached.')
+        finally:
+            # When done, ask the threads to stop.
+            coord.request_stop()
 
     # Wait for threads to finish.
     coord.join(threads)
     sess.close()
 
-    # Numpy array divide element-wisely.
-    return (accum_new_centers_sum / accum_new_centers_count), accum_distance
+    # Expand to each feature.
+    accum_per_clu_count_per_feat = np.expand_dims(accum_per_clu_count, axis=1)
+    if return_mean_clu_dist:
+        # Numpy array divide element-wisely.
+        return ((accum_per_clu_sum / accum_per_clu_count_per_feat), accum_total_dist,
+                accum_per_clu_total_dist / accum_per_clu_count)
+    else:
+        # Numpy array divide element-wisely.
+        return (accum_per_clu_sum / accum_per_clu_count_per_feat), accum_total_dist, None
 
 
 def mini_batch_kmeans():
@@ -267,7 +303,7 @@ def dbscan():
     pass
 
 
-def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_method=1, alpha=0.1, p=3, debug=False):
+def initialize(num_centers_ratio, method=None, metric='cosine', max_iter=20, tol=1.0, scaling_method=1, alpha=0.1, p=3):
     """
     This functions implements the following two phases:
     1. To initialize representative prototypes (RBF centers) c and scaling factors sigma.
@@ -280,12 +316,13 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
     :param method: The method to decide the centers. Possible choices are kmeans, online(kmeans), and lvq(learning).
      Default is None, which represents randomly selecting a certain number of examples as centers.
     :param metric: Distance metric, euclidean distance or cosine distance.
+    :param max_iter: The maximal number of iterations clustering to be done.
+    :param tol: The minimal reduction of objective function of clustering to be reached to stop iteration.
     :param scaling_method: There are four choices. 1, all of them use the same sigma, the p smallest pairs of distances.
      2, average of p nearest centers. 3, the distance to the nearest center that has a different label (Not supported!).
      4, mean distance between this center and all of its points.
     :param alpha: The alpha parameter that should be set heuristically. It works like a learning rate. (mu in Zhang's)
     :param p: When scaling_method is 1 or 2, p is needed.
-    :param debug: If True, prints detailed intermediate results.
     :return:
     """
     logging.info('Generate a group of centers for all labels. See Schwenker.')
@@ -304,58 +341,93 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
     reader = get_reader(model_type, feature_names, feature_sizes)
-    initial_centers = random_sample(num_centers_ratio, reader, train_data_pattern, batch_size, num_readers)
-    print('initial_centers: {}'.format(initial_centers))
-    num_initial_centers = len(initial_centers)
-    print('Sampled {} centers totally.'.format(num_initial_centers))
+    centers = random_sample(num_centers_ratio, reader, train_data_pattern, batch_size, num_readers)
+    logging.debug('Randomly selected centers: {}'.format(centers))
+    print('Sampled {} centers totally.'.format(len(centers)))
 
+    # Used in scaling method 4.
+    per_clu_mean_dist = None
     # Perform kmeans or online kmeans.
     if method is None:
-        logging.info('Using randomly selected initial centers as model prototypes (centers).')
+        logging.info('Using randomly selected centers as model prototypes (centers).')
     elif 'online' == method:
         # TODO.
         raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
     elif 'kmeans' == method:
-        start_time = time.time()
         logging.info('Using k-means clustering result as model prototypes (centers).')
-        new_centers, new_dist = kmeans_iter(initial_centers, reader,
-                                            train_data_pattern, batch_size, num_readers, metric='cosine')
-        print('One iteration needs {} s.'.format(time.time() - start_time))
-        print('new_centers: {}\nnew_dist: {}'.format(new_centers, new_dist))
+        iter_count = 0
+        # clustering objective function.
+        obj = np.PINF
+        return_mean_clu_dist = (scaling_method == 4)
+
+        while iter_count < max_iter:
+            start_time = time.time()
+            new_centers, new_obj, per_clu_mean_dist = kmeans_iter(centers, reader, train_data_pattern,
+                                                                  batch_size, num_readers, metric=metric,
+                                                                  return_mean_clu_dist=return_mean_clu_dist)
+            iter_count += 1
+            print('The {}-th iteration took {} s.'.format(iter_count, time.time() - start_time))
+            logging.debug('new_centers: {}'.format(new_centers))
+            print('new_obj: {}'.format(new_obj))
+            if not np.isinf(obj) and (obj - new_obj) < tol:
+                logging.info('Done k-means clustering.')
+                break
+
+            centers = new_centers
+            obj = new_obj
+
     elif 'lvq' == method:
         raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
     else:
         raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
 
     # Compute scaling factors based on these centers.
+    num_centers = len(centers)
+    sigmas = []
     if scaling_method == 1:
-        if ('euclidean' == metric) or ('cosine' == metric):
-            pairwise_distances = sci_distance.pdist(initial_centers, metric=metric)
-            p = min(p, len(pairwise_distances))
-            logging.info('Using {} minimal pairwise distances.'.format(p))
-            # np.partition begins with 1 instead of 0.
-            sigmas = [alpha * np.mean(np.partition(pairwise_distances, p - 1)[:p])] * num_initial_centers
-    elif scaling_method == 2:
-        p = min(p, num_initial_centers - 1)
+        # Equation 27.
+        pairwise_distances = sci_distance.pdist(centers, metric=metric)
+        p = min(p, len(pairwise_distances))
         logging.info('Using {} minimal pairwise distances.'.format(p))
+        # np.partition begins with 1 instead of 0.
+        sigmas = np.array([alpha * np.mean(np.partition(pairwise_distances, p - 1)[:p])] * num_centers,
+                          dtype=np.float32)
+    elif scaling_method == 2:
+        # Equation 28.
+        p = min(p, num_centers - 1)
+        logging.info('Using {} minimal distances per center.'.format(p))
 
         if 'euclidean' == metric:
             dis_fn = sci_distance.euclidean
         else:
             dis_fn = sci_distance.cosine
 
-        sigmas = []
-        for c in initial_centers:
-            distances = [dis_fn(c, _c) for _c in initial_centers]
+        for c in centers:
+            distances = [dis_fn(c, _c) for _c in centers]
             # The distance between c and itself is zero and is in the left partition.
             sigmas.append(alpha * np.sum(np.partition(distances, p)[:p + 1]) / float(p))
+
+        sigmas = np.array(sigmas, dtype=np.float32)
     elif scaling_method == 3:
+        # Equation 29.
         raise NotImplementedError('Not supported when all labels use the same centers.')
     elif scaling_method == 4:
-        logging.info('Reuse results from kmeans or online kmeans.')
-        # TODO. Consider code repeatability.
+        # Equation 30.
+        if per_clu_mean_dist is None:
+            _, _, per_clu_mean_dist = kmeans_iter(centers, reader, train_data_pattern,
+                                                  batch_size, num_readers, metric=metric, return_mean_clu_dist=True)
+            logging.info('Compute mean distance per cluster using kmeans or online kmeans.')
+        else:
+            logging.info('Reuse results from kmeans or online kmeans.')
+
+        sigmas = alpha * per_clu_mean_dist
+    elif scaling_method == 5:
+        # Equation 31.
+        raise NotImplementedError('Only three methods are supported. Please read the documentation.')
     else:
-        raise NotImplementedError('Only four methods are supported. Please read the documentation.')
+        raise NotImplementedError('Only three methods are supported. Please read the documentation.')
+
+    print('Scaling factor sigmas: {}'.format(sigmas))
 
 
 def initialize_per_label():
@@ -379,7 +451,9 @@ def train(debug=False):
 
     # num_centers = FLAGS.num_centers
     # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
-    initialize(num_centers_ratio, method='kmeans', debug=debug)
+    # metric is euclidean or cosine.
+    initialize(num_centers_ratio, method='kmeans', metric='cosine', scaling_method=4)
+    # initialize(num_centers_ratio, method=None, metric='cosine', scaling_method=4)
 
 
 def inference(out_file_location, top_k, debug=False):
@@ -425,7 +499,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
 
-    flags.DEFINE_float('num_centers_ratio', 0.01, 'The number of centers in RBF network.')
+    flags.DEFINE_float('num_centers_ratio', 0.001, 'The number of centers in RBF network.')
 
     # Set by the memory limit (52GB).
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
