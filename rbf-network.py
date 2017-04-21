@@ -173,7 +173,7 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
         if metric == 'euclidean':
             current_centers = tf.constant(centers, dtype=tf.float32, name='current_centers')
         else:
-            normalized_centers = centers / np.linalg.norm(centers, axis=-1, keepdims=True)
+            normalized_centers = centers / np.clip(np.linalg.norm(centers, axis=-1, keepdims=True), 1e-6, np.PINF)
             current_centers = tf.constant(normalized_centers, dtype=tf.float32, name='current_centers')
 
         # Objective function. TODO, avoid overflow in initial iteration.
@@ -316,11 +316,11 @@ def initialize(num_centers_ratio, method=None, metric='euclidean', scaling_metho
         # TODO.
         raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
     elif 'kmeans' == method:
-        print('Now: {}'.format(time.time()))
+        start_time = time.time()
         logging.info('Using k-means clustering result as model prototypes (centers).')
         new_centers, new_dist = kmeans_iter(initial_centers, reader,
-                                            train_data_pattern, batch_size, num_readers, metric='euclidean')
-        print('Now: {}'.format(time.time()))
+                                            train_data_pattern, batch_size, num_readers, metric='cosine')
+        print('One iteration needs {} s.'.format(time.time() - start_time))
         print('new_centers: {}\nnew_dist: {}'.format(new_centers, new_dist))
     elif 'lvq' == method:
         raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
