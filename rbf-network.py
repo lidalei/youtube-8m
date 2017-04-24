@@ -369,11 +369,12 @@ def initialize(num_centers_ratio, method=None, metric='cosine', max_iter=20, tol
             print('The {}-th iteration took {} s.'.format(iter_count, time.time() - start_time))
             logging.debug('new_centers: {}'.format(new_centers))
             print('new_obj: {}'.format(new_obj))
+            centers = new_centers
+
             if not np.isinf(obj) and (obj - new_obj) < tol:
                 logging.info('Done k-means clustering.')
                 break
 
-            centers = new_centers
             obj = new_obj
 
     elif 'lvq' == method:
@@ -429,6 +430,8 @@ def initialize(num_centers_ratio, method=None, metric='cosine', max_iter=20, tol
 
     print('Scaling factor sigmas: {}'.format(sigmas))
 
+    return centers, sigmas
+
 
 def initialize_per_label():
     """
@@ -452,8 +455,9 @@ def train(debug=False):
     # num_centers = FLAGS.num_centers
     # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
     # metric is euclidean or cosine.
-    initialize(num_centers_ratio, method='kmeans', metric='cosine', scaling_method=4)
-    # initialize(num_centers_ratio, method=None, metric='cosine', scaling_method=4)
+    # For test, initialize(num_centers_ratio, method=None, metric='cosine', scaling_method=4)
+    centers, sigmas = initialize(num_centers_ratio, method='kmeans', metric='cosine', scaling_method=4)
+    # TODO, build logistic regression graph and optimize it
 
 
 def inference(out_file_location, top_k, debug=False):
