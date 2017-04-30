@@ -170,17 +170,19 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
     graph = tf.Graph()
     # Create the graph to traverse all training data once.
     with graph.as_default():
-        # Keep current centers in graph.
-        if metric == 'euclidean':
-            current_centers = tf.constant(centers, dtype=tf.float32, name='current_centers')
-        else:
-            normalized_centers = centers / np.clip(np.linalg.norm(centers, axis=-1, keepdims=True), 1e-6, np.PINF)
-            current_centers = tf.constant(normalized_centers, dtype=tf.float32, name='current_centers')
+        # Define current centers as a variable in graph and use placeholder to hold large number of centers.
+        centers_initializer = tf.placeholder(tf.float32, shape=centers.shape, name='centers_initializer')
+        # Setting collections=[] keeps the variable out of the GraphKeys.GLOBAL_VARIABLES collection
+        # used for saving and restoring checkpoints.
+        current_centers = tf.Variable(initial_value=centers_initializer, trainable=False, collections=[],
+                                      name='current_centers')
 
         # Objective function. TODO, avoid overflow in initial iteration.
         total_dist = tf.Variable(initial_value=0, dtype=tf.float32, name='total_distance')
-        # Define new centers as Variable.
-        per_clu_sum = tf.Variable(initial_value=tf.zeros_like(centers), dtype=tf.float32)
+        # Define new centers as Variable and use placeholder to hold large number of centers.
+        per_clu_sum_initializer = tf.placeholder(tf.float32, shape=centers.shape)
+        per_clu_sum = tf.Variable(initial_value=per_clu_sum_initializer, trainable=False, collections=[],
+                                  name='per_cluster_sum')
         per_clu_count = tf.Variable(initial_value=tf.zeros([num_centers]), dtype=tf.float32)
         if return_mean_clu_dist:
             per_clu_total_dist = tf.Variable(initial_value=tf.zeros([num_centers]))
@@ -246,6 +248,16 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
     sess = tf.Session(graph=graph)
     sess.run(init_op)
 
+    # initialize centers variable in tf graph.
+    if metric == 'euclidean':
+        sess.run(current_centers.initializer, feed_dict={centers_initializer: centers})
+    else:
+        normalized_centers = centers / np.clip(np.linalg.norm(centers, axis=-1, keepdims=True), 1e-6, np.PINF)
+        sess.run(current_centers.initializer, feed_dict={centers_initializer: normalized_centers})
+
+    # initializer per_clu_sum.
+    sess.run(per_clu_sum.initializer, feed_dict={per_clu_sum_initializer: np.zeros_like(centers)})
+
     # Define to avoid warning.
     accum_total_dist = None
     accum_per_clu_sum = None
@@ -303,7 +315,8 @@ def dbscan():
     pass
 
 
-def initialize(num_centers_ratio, method=None, metric='cosine', max_iter=20, tol=1.0, scaling_method=1, alpha=0.1, p=3):
+def initialize(num_centers_ratio, reader, data_pattern, batch_size=1024, num_readers=1,
+               method=None, metric='cosine', max_iter=20, tol=1.0, scaling_method=1, alpha=0.1, p=3):
     """
     This functions implements the following two phases:
     1. To initialize representative prototypes (RBF centers) c and scaling factors sigma.
@@ -313,6 +326,10 @@ def initialize(num_centers_ratio, method=None, metric='cosine', max_iter=20, tol
 
     :param num_centers_ratio: The number of centers to be decided / total number of examples that belong to label l,
      for l = 0, ..., num_classes - 1.
+    :param reader: video-level features reader or frame-level features reader.
+    :param data_pattern: File Glob of data set.
+    :param batch_size: How many examples to handle per time.
+    :param num_readers: How many IO threads to prefetch examples.
     :param method: The method to decide the centers. Possible choices are kmeans, online(kmeans), and lvq(learning).
      Default is None, which represents randomly selecting a certain number of examples as centers.
     :param metric: Distance metric, euclidean distance or cosine distance.
@@ -335,13 +352,7 @@ def initialize(num_centers_ratio, method=None, metric='cosine', max_iter=20, tol
     else:
         raise NotImplementedError('Only euclidean distance and cosine distance are supported.')
 
-    train_data_pattern = FLAGS.train_data_pattern
-    batch_size = FLAGS.batch_size
-    num_readers = FLAGS.num_readers
-    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
-
-    reader = get_reader(model_type, feature_names, feature_sizes)
-    centers = random_sample(num_centers_ratio, reader, train_data_pattern, batch_size, num_readers)
+    centers = random_sample(num_centers_ratio, reader, data_pattern, batch_size, num_readers)
     logging.debug('Randomly selected centers: {}'.format(centers))
     print('Sampled {} centers totally.'.format(len(centers)))
 
@@ -362,7 +373,7 @@ def initialize(num_centers_ratio, method=None, metric='cosine', max_iter=20, tol
 
         while iter_count < max_iter:
             start_time = time.time()
-            new_centers, new_obj, per_clu_mean_dist = kmeans_iter(centers, reader, train_data_pattern,
+            new_centers, new_obj, per_clu_mean_dist = kmeans_iter(centers, reader, data_pattern,
                                                                   batch_size, num_readers, metric=metric,
                                                                   return_mean_clu_dist=return_mean_clu_dist)
             iter_count += 1
@@ -415,7 +426,7 @@ def initialize(num_centers_ratio, method=None, metric='cosine', max_iter=20, tol
     elif scaling_method == 4:
         # Equation 30.
         if per_clu_mean_dist is None:
-            _, _, per_clu_mean_dist = kmeans_iter(centers, reader, train_data_pattern,
+            _, _, per_clu_mean_dist = kmeans_iter(centers, reader, data_pattern,
                                                   batch_size, num_readers, metric=metric, return_mean_clu_dist=True)
             logging.info('Compute mean distance per cluster using kmeans or online kmeans.')
         else:
@@ -449,15 +460,123 @@ def initialize_per_label():
     raise NotImplementedError('It is a little troubling, will be implemented later! Be patient.')
 
 
-def train(debug=False):
+def build_graph():
+    """
+    Build training and test graph.
+
+    :return:
+    """
+    pass
+
+
+def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=False):
+    """
+    Training.
+
+    :param init_learning_rate: Initial learning rate.
+    :param decay_steps: How many training steps to decay learning rate once.
+    :param decay_rate: How much to decay learning rate.
+    :param epochs: The maximal epochs to pass all training data.
+    :param debug: boolean, True to print detailed debug information, False, silent.
+    :return:
+    """
     num_centers_ratio = FLAGS.num_centers_ratio
+    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
+    reader = get_reader(model_type, feature_names, feature_sizes)
+    train_data_pattern = FLAGS.train_data_pattern
+    batch_size = FLAGS.batch_size
+    num_readers = FLAGS.num_readers
+
+    # distance metric, cosine or euclidean.
+    dist_metric = FLAGS.dist_metric
 
     # num_centers = FLAGS.num_centers
     # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
     # metric is euclidean or cosine.
     # For test, initialize(num_centers_ratio, method=None, metric='cosine', scaling_method=4)
-    centers, sigmas = initialize(num_centers_ratio, method='kmeans', metric='cosine', scaling_method=4)
-    # TODO, build logistic regression graph and optimize it
+    centers, sigmas = initialize(num_centers_ratio, reader, train_data_pattern, batch_size, num_readers,
+                                 method='kmeans', metric=dist_metric, scaling_method=4)
+
+    num_centers = centers.shape[0]
+
+    num_classes = reader.num_classes
+
+    # Build logistic regression graph and optimize it.
+
+    graph = tf.Graph()
+    with graph.as_default():
+        if dist_metric == 'cosine':
+            normalized_centers = centers / np.clip(np.linalg.norm(centers, axis=-1, keepdims=True), 1e-6, np.PINF)
+            prototypes = tf.Variable(initial_value=normalized_centers, dtype=tf.float32)
+        else:
+            prototypes = tf.Variable(initial_value=centers, dtype=tf.float32)
+
+        neg_two_times_sq_sigmas = np.multiply(-2.0, np.square(sigmas))
+        expanded_neg_two_times_sq_sigmas = np.expand_dims(neg_two_times_sq_sigmas, axis=0)
+        # [-2.0 * sigmas ** 2], basis function denominators.
+        neg_basis_f_deno = tf.Variable(initial_value=expanded_neg_two_times_sq_sigmas, dtype=tf.float32)
+
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+            get_input_data_tensors(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
+                                   num_readers=num_readers, num_epochs=epochs, name_scope='lr_weights'))
+
+        if dist_metric == 'cosine':
+            normalized_video_batch = tf.nn.l2_normalize(video_batch, -1)
+            cosine_sim = tf.matmul(normalized_video_batch, prototypes, transpose_b=True)
+            squared_dist = tf.square(tf.subtract(1.0, cosine_sim), name='cosine_square_dist')
+        else:
+            # Make use of broadcasting feature.
+            expanded_centers = tf.expand_dims(prototypes, axis=0)
+            expanded_video_batch = tf.expand_dims(video_batch, axis=1)
+
+            sub = tf.subtract(expanded_video_batch, expanded_centers)
+            # element-wise square.
+            squared_sub = tf.square(sub)
+            # Compute distances with centers video-wisely. Shape [batch_size, num_initial_centers]. negative === -.
+            squared_dist = tf.reduce_sum(squared_sub, axis=-1, name='euclidean_square_dist')
+
+        rbf_fs = tf.exp(tf.divide(squared_dist, neg_basis_f_deno), name='basis_function')
+
+        # Define num_classes logistic regression models parameters. num_centers is new feature dimension.
+        weights = tf.Variable(initial_value=tf.truncated_normal([num_centers, num_classes]),
+                              dtype=tf.float32, name='weights')
+        basis = tf.Variable(initial_value=tf.zeros([num_classes]))
+
+        lr_output = tf.matmul(rbf_fs, weights) + basis
+        lr_pred_prob = tf.nn.sigmoid(lr_output, name='lr_pred_probability')
+        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=video_labels_batch, logits=lr_output, name='loss')
+
+        global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
+        rough_num_examples_processed = tf.multiply(global_step, batch_size)
+        adap_learning_rate = tf.train.exponential_decay(init_learning_rate, rough_num_examples_processed,
+                                                        decay_steps, decay_rate)
+        optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
+
+        train_op = optimizer.minimize(loss, global_step=global_step)
+
+        # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    sess = tf.Session(graph=graph)
+    sess.run(init_op)
+
+    # Start input enqueue threads.
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+    try:
+        while not coord.should_stop():
+            sess.run(train_op)
+
+    except tf.errors.OutOfRangeError:
+        logging.info('Done training -- {} epochs finished.'.format(epochs))
+    finally:
+        # When done, ask the threads to stop.
+        coord.request_stop()
+
+    # Wait for threads to finish.
+    coord.join(threads)
+    sess.close()
 
 
 def inference(out_file_location, top_k, debug=False):
@@ -466,6 +585,11 @@ def inference(out_file_location, top_k, debug=False):
 
 def main(unused_argv):
     is_train = FLAGS.is_train
+    init_learning_rate = FLAGS.init_learning_rate
+    decay_steps = FLAGS.decay_steps
+    decay_rate = FLAGS.decay_rate
+
+    train_epochs = FLAGS.train_epochs
     is_tuning_hyper_para = FLAGS.is_tuning_hyper_para
     is_debug = FLAGS.is_debug
 
@@ -478,7 +602,7 @@ def main(unused_argv):
         if is_tuning_hyper_para:
             raise NotImplementedError('Implementation is under progress.')
         else:
-            train(debug=is_debug)
+            train(init_learning_rate, decay_steps, decay_rate, epochs=train_epochs, debug=is_debug)
     else:
         inference(output_file, top_k)
 
@@ -509,12 +633,21 @@ if __name__ == '__main__':
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
 
-    flags.DEFINE_boolean('verbosity', False, 'Whether print intermediate results, default no.')
+    flags.DEFINE_string('dist_metric', 'cosine', 'Distance metric, cosine or euclidean.')
 
     flags.DEFINE_string('output_dir', '/tmp/ml-knn/',
                         'The directory to which prior and posterior probabilities should be written.')
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
+
+    flags.DEFINE_float('init_learning_rate', 0.01, 'Float variable to indicate initial learning rate.')
+
+    flags.DEFINE_integer('decay_steps', 1000000,
+                         'Float variable indicating no. of examples to decay learning rate once.')
+
+    flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
+
+    flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
     flags.DEFINE_boolean('is_tuning_hyper_para', False,
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
