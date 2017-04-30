@@ -119,7 +119,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     Return k-nearest neighbors. https://www.tensorflow.org/programmers_guide/reading_data.
 
     :param video_id_batch: Must be a value.
-    :param video_batch: Must be a value.
+    :param video_batch: Must be a numpy array.
     :param reader:
     :param data_pattern:
     :param batch_size:
@@ -133,7 +133,9 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     _k = (k + 1) if is_train else k
 
     # normalization video batch along the last dimension.
-    video_batch_normalized = video_batch / np.clip(np.linalg.norm(video_batch, axis=-1, keepdims=True), 1e-6, np.PINF)
+    video_batch_normalized_initializer = tf.placeholder(tf.float32, video_batch.shape)
+    video_batch_normalized = tf.Variable(initial_value=video_batch_normalized_initializer, trainable=False,
+                                         collections=[], name='video_batch_outer')
 
     # Create a new graph to compute k-nearest neighbors from video_batch_inner for each video of video_batch.
     with tf.Graph().as_default() as graph:
@@ -169,6 +171,12 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     # A new graph needs a new session. Thus, create one.
     with tf.Session(graph=graph) as sess:
         sess.run(init_op)
+
+        sess.run(video_batch_normalized.initializer,
+                 feed_dict={
+                     video_batch_normalized_initializer: video_batch / np.clip(
+                         np.linalg.norm(video_batch, axis=-1, keepdims=True), 1e-6, np.PINF)
+                 })
 
         # Start input enqueue threads.
         coord = tf.train.Coordinator()
