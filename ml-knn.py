@@ -77,14 +77,20 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1):
 
     num_classes = reader.num_classes
 
-    sum_labels_onehot = tf.Variable(tf.zeros([num_classes]))
-    total_num_videos = tf.Variable(0, dtype=tf.float32)
+    with tf.Graph().as_default() as g:
+        sum_labels_onehot = tf.Variable(tf.zeros([num_classes]))
+        total_num_videos = tf.Variable(0, dtype=tf.float32)
 
-    sum_labels_onehot_op = sum_labels_onehot.assign_add(tf.reduce_sum(tf.cast(video_labels_batch, tf.float32), axis=0))
-    accum_num_videos_op = total_num_videos.assign_add(tf.cast(tf.shape(video_labels_batch)[0], tf.float32))
+        sum_labels_onehot_op = sum_labels_onehot.assign_add(
+            tf.reduce_sum(tf.cast(video_labels_batch, tf.float32), axis=0))
+        accum_num_videos_op = total_num_videos.assign_add(tf.cast(tf.shape(video_labels_batch)[0], tf.float32))
 
-    init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-    with tf.Session() as sess:
+        with tf.control_dependencies([sum_labels_onehot_op, accum_num_videos_op]):
+            accum_non_op = tf.no_op()
+
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    with tf.Session(graph=g) as sess:
         sess.run(init_op)
 
         # Start input enqueue threads.
@@ -94,7 +100,7 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1):
         try:
             while not coord.should_stop():
                 # sum video labels
-                sum_labels_val, accum_num_videos_val = sess.run([sum_labels_onehot_op, accum_num_videos_op])
+                sess.run(accum_non_op)
 
         except tf.errors.OutOfRangeError:
             logging.info('Done the whole dataset.')
@@ -104,14 +110,16 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1):
 
         # Wait for threads to finish.
         coord.join(threads)
+
+        sum_labels_val, total_num_videos_val = sess.run([sum_labels_onehot, total_num_videos])
         sess.close()
 
-    labels_prior_prob_val = (smooth_para + sum_labels_val) / (smooth_para * 2 + accum_num_videos_val)
+    labels_prior_prob_val = (smooth_para + sum_labels_val) / (smooth_para * 2 + total_num_videos_val)
 
-    logging.debug('sum_labels_val: {}\n accum_num_videos_val: {}'.format(sum_labels_val, accum_num_videos_val))
+    logging.debug('sum_labels_val: {}\n accum_num_videos_val: {}'.format(sum_labels_val, total_num_videos_val))
     logging.debug('compute_labels_prob: {}'.format(labels_prior_prob_val))
 
-    return sum_labels_val, accum_num_videos_val, labels_prior_prob_val
+    return sum_labels_val, total_num_videos_val, labels_prior_prob_val
 
 
 def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, batch_size=8192, k=3, debug=False):
