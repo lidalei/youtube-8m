@@ -374,21 +374,23 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     count = np.zeros([k + 1, num_classes], dtype=np.float32)
     counter_count = np.zeros([k + 1, num_classes], dtype=np.float32)
 
-    global_step = tf.Variable(0, trainable=False, dtype=tf.int64, name='global_step')
-    global_step_inc_op = global_step.assign_add(1)
+    with tf.Graph().as_default() as g:
+        global_step = tf.Variable(0, trainable=False, dtype=tf.int64, name='global_step')
+        global_step_inc_op = global_step.assign_add(1)
 
-    # For debug, use a single tfrecord file (debug mode).
-    video_id_batch, video_batch, video_labels_batch, num_frames_batch = (get_input_data_tensors(
-        reader, train_data_pattern, batch_size, num_readers=num_readers))
+        # For debug, use a single tfrecord file (debug mode).
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (get_input_data_tensors(
+            reader, train_data_pattern, batch_size, num_readers=num_readers))
 
-    tf.summary.scalar('global_step', global_step)
+        tf.summary.scalar('global_step', global_step)
 
-    init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+        summary_op = tf.summary.merge_all()
 
-    sess = tf.Session()
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
-    writer = tf.summary.FileWriter(model_dir, sess.graph)
-    summary_op = tf.summary.merge_all()
+    writer = tf.summary.FileWriter(model_dir, g)
+
+    sess = tf.Session(graph=g)
 
     sess.run(init_op)
 
@@ -424,6 +426,8 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
             logging.debug('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
             # Update count and counter_count.
             # batch_size * delta.
+            logging.debug('Finding k nearest neighbors needs {} s.'.format(time.time() - start_time))
+
             deltas = topk_labels.astype(np.int32).sum(axis=1)
             # Update count and counter_count for each example.
             for delta, video_labels_val in zip(deltas, video_labels_batch_val):
