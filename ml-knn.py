@@ -133,7 +133,8 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     num_readers = FLAGS.num_readers
     is_train = FLAGS.is_train
     # If training, k = k + 1, to avoid the video itself. Otherwise, not necessary.
-    _k = (k + 1) if is_train else k
+    _k = k
+    k = (_k + 1) if is_train else _k
 
     # Create a new graph to compute k-nearest neighbors from video_batch_inner for each video of video_batch.
     with tf.Graph().as_default() as graph:
@@ -142,10 +143,10 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         video_batch_normalized = tf.Variable(initial_value=video_batch_normalized_initializer, trainable=False,
                                              collections=[], name='video_batch_outer')
 
-        topk_video_sims_initializer = tf.placeholder(tf.float32, shape=[num_videos, _k])
+        topk_video_sims_initializer = tf.placeholder(tf.float32, shape=[num_videos, k])
         topk_video_sims = tf.Variable(initial_value=topk_video_sims_initializer, collections=[], name='topk_sims')
 
-        topk_video_labels_initializer = tf.placeholder(tf.bool, shape=[num_videos, _k, num_classes])
+        topk_video_labels_initializer = tf.placeholder(tf.bool, shape=[num_videos, k, num_classes])
         topk_video_labels = tf.Variable(initial_value=topk_video_labels_initializer, collections=[], name='topk_labels')
 
         # Generate example queue. Traverse the queue to traverse the dataset.
@@ -162,25 +163,25 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         similarities = tf.matmul(video_batch_normalized, video_batch_inner_normalized, transpose_b=True)
         # top k similar videos per video in video_batch_normalized.
         # values and indices are in shape [batch_size, k].
-        batch_topk_sims, batch_topk_sim_indices = tf.nn.top_k(similarities, k=_k)
+        batch_topk_sims, batch_topk_sim_indices = tf.nn.top_k(similarities, k=k)
 
         batch_topk_video_labels = tf.gather(video_labels_batch_inner, batch_topk_sim_indices)
 
         # Update topk_video_sims and labels.
         top2k_video_sims = tf.concat([topk_video_sims, batch_topk_sims], 1)
-        updated_topk_video_sims, updated_topk_video_sims_indices = tf.nn.top_k(top2k_video_sims, k=_k)
-
+        updated_topk_video_sims, updated_topk_video_sims_indices = tf.nn.top_k(top2k_video_sims, k=k)
         update_topk_sims_op = tf.assign(topk_video_sims, updated_topk_video_sims)
-        # To avoid fetching useless data.
-        with tf.control_dependencies([update_topk_sims_op]):
-            update_topk_sims_non_op = tf.no_op()
 
-        # Update top k similar video labels.
-        topk_video_labels_updater = tf.placeholder(tf.bool, shape=[num_videos, _k, num_classes])
-        update_topk_video_labels_op = tf.assign(topk_video_labels, topk_video_labels_updater)
+        top_2k_video_labels = tf.concat([topk_video_labels, batch_topk_video_labels], 1)
+        flatten_top2k_labels = tf.reshape(top_2k_video_labels, [-1, num_classes])
+        idx_inc = tf.expand_dims(tf.range(0, num_videos, dtype=tf.int32) * 2 * k, axis=1)
+        idx_in_flatten = tf.add(updated_topk_video_sims_indices, idx_inc)
+        update_topk_labels_op = tf.assign(topk_video_labels, tf.gather(flatten_top2k_labels, idx_in_flatten))
+
+        # Update top k similar video sims and labels.
         # To avoid fetching useless data.
-        with tf.control_dependencies([update_topk_video_labels_op]):
-            update_topk_labels_non_op = tf.no_op()
+        with tf.control_dependencies([update_topk_sims_op, update_topk_labels_op]):
+            update_topk_non_op = tf.no_op()
 
         # Initialization of global and local variables (e.g., queue epoch).
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -199,39 +200,23 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                  {
                      video_batch_normalized_initializer: video_batch / np.clip(
                          np.linalg.norm(video_batch, axis=-1, keepdims=True), 1e-6, np.PINF),
-                     topk_video_sims_initializer: np.full([num_videos, _k], -2.0, dtype=np.float32),
-                     topk_video_labels_initializer: np.zeros([num_videos, _k, num_classes], dtype=np.bool)
+                     topk_video_sims_initializer: np.full([num_videos, k], -2.0, dtype=np.float32),
+                     topk_video_labels_initializer: np.zeros([num_videos, k, num_classes], dtype=np.bool)
                  })
 
         # Start input enqueue threads.
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-        # Get current topk_video_labels.
-        final_topk_video_labels = sess.run(topk_video_labels)
-
         try:
             while not coord.should_stop():
-                # Run results are numpy arrays. Update topk_video_sims.
-                batch_topk_video_labels_val, updated_topk_video_sims_indices_val, _ = sess.run(
-                    [batch_topk_video_labels, updated_topk_video_sims_indices, update_topk_sims_non_op])
-
-                top_2k_video_labels = np.concatenate((final_topk_video_labels, batch_topk_video_labels_val), axis=1)
-
-                # Compute and update top k similar videos in graph.
-                final_topk_video_labels = np.stack(
-                    [top_2k_video_labels[i, ind] for i, ind in enumerate(updated_topk_video_sims_indices_val)])
-
-                sess.run(update_topk_labels_non_op, feed_dict={
-                    topk_video_labels_updater: final_topk_video_labels
-                })
+                # Run results are numpy arrays. Update topk_video_sims and tok_video_labels.
+                _ = sess.run(update_topk_non_op)
 
                 # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
                 # np.stack() can be np.array().
                 # Removed video_ids.
                 # batch_topk_video_ids = np.stack([video_id_batch_inner_val[ind] for ind in batch_topk_sim_indices])
-                # batch_topk_video_labels = np.stack(
-                #     [video_labels_batch_inner_val[ind] for ind in batch_topk_sim_indices])
 
                 # if debug:
                 #     # Debug mode.
@@ -243,13 +228,16 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                 #     coord.request_stop()
 
         except tf.errors.OutOfRangeError:
-            logging.info('Done the whole dataset.')
+            logging.info('Done the whole dataset - finding k nearest neighbors.')
         finally:
             # When done, ask the threads to stop.
             coord.request_stop()
 
         # Wait for threads to finish.
         coord.join(threads)
+
+        final_topk_video_labels = sess.run(topk_video_labels)
+
         sess.close()
 
     if is_train:
