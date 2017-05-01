@@ -468,6 +468,7 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
 
     model_dir = FLAGS.model_dir
     batch_size = 1024 if debug else FLAGS.batch_size
+    # For debug, use a single tfrecord file (debug mode).
     num_readers = 1 if debug else FLAGS.num_readers
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
@@ -483,14 +484,13 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
     num_classes = reader.num_classes
     range_num_classes = range(num_classes)
 
-    with tf.Session() as sess, gfile.Open(out_file_location, "w+") as out_file:
-
-        # For debug, use a single tfrecord file (debug mode).
+    with tf.Graph().as_default() as g:
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
             reader, test_data_pattern, batch_size, num_readers=num_readers)
 
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
+    with tf.Session(graph=g) as sess, gfile.Open(out_file_location, "w+") as out_file:
         sess.run(init_op)
 
         # Be cautious to not be blocked by queue.
