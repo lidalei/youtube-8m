@@ -143,9 +143,9 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                                              collections=[], name='video_batch_outer')
 
         topk_video_sims_initializer = tf.placeholder(tf.float32, shape=[num_videos, _k])
-        topk_video_labels_initializer = tf.placeholder(tf.bool, shape=[num_videos, _k, num_classes])
-
         topk_video_sims = tf.Variable(initial_value=topk_video_sims_initializer, collections=[], name='topk_sims')
+
+        topk_video_labels_initializer = tf.placeholder(tf.bool, shape=[num_videos, _k, num_classes])
         topk_video_labels = tf.Variable(initial_value=topk_video_labels_initializer, collections=[], name='topk_labels')
 
         # Generate example queue. Traverse the queue to traverse the dataset.
@@ -168,15 +168,19 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
 
         # Update topk_video_sims and labels.
         top2k_video_sims = tf.concat([topk_video_sims, batch_topk_sims], 1)
-        top_2k_video_labels = tf.concat([topk_video_labels, batch_topk_video_labels], 1)
-
         updated_topk_video_sims, updated_topk_video_sims_indices = tf.nn.top_k(top2k_video_sims, k=_k)
 
-        update_topk_video_sims_op = tf.assign(topk_video_sims, updated_topk_video_sims)
+        update_topk_sims_op = tf.assign(topk_video_sims, updated_topk_video_sims)
+        # To avoid fetching useless data.
+        with tf.control_dependencies([update_topk_sims_op]):
+            update_topk_sims_non_op = tf.no_op()
 
-        # TODO, implement numpy function here.
+        # Update top k similar video labels.
         topk_video_labels_updater = tf.placeholder(tf.bool, shape=[num_videos, _k, num_classes])
         update_topk_video_labels_op = tf.assign(topk_video_labels, topk_video_labels_updater)
+        # To avoid fetching useless data.
+        with tf.control_dependencies([update_topk_video_labels_op]):
+            update_topk_labels_non_op = tf.no_op()
 
         # Initialization of global and local variables (e.g., queue epoch).
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -189,13 +193,13 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     # A new graph needs a new session. Thus, create one.
     with tf.Session(graph=graph) as sess:
         sess.run(init_op)
-        # initialize outer video batch.
+        # initialize outer video batch. Current top k similarities are -2.0 (< minimum -1.0).
         sess.run([video_batch_normalized.initializer, topk_video_sims.initializer, topk_video_labels.initializer],
                  feed_dict=
                  {
                      video_batch_normalized_initializer: video_batch / np.clip(
                          np.linalg.norm(video_batch, axis=-1, keepdims=True), 1e-6, np.PINF),
-                     topk_video_sims_initializer: np.zeros([num_videos, _k], dtype=np.float32),
+                     topk_video_sims_initializer: np.full([num_videos, _k], -2.0, dtype=np.float32),
                      topk_video_labels_initializer: np.zeros([num_videos, _k, num_classes], dtype=np.bool)
                  })
 
@@ -203,18 +207,23 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
+        # Get current topk_video_labels.
+        final_topk_video_labels = sess.run(topk_video_labels)
+
         try:
             while not coord.should_stop():
-                # Run results are numpy arrays.
-                top_2k_video_labels_val, updated_topk_video_sims_val, updated_topk_video_sims_indices_val = sess.run(
-                    [top_2k_video_labels, update_topk_video_sims_op, updated_topk_video_sims_indices])
+                # Run results are numpy arrays. Update topk_video_sims.
+                batch_topk_video_labels_val, updated_topk_video_sims_indices_val, _ = sess.run(
+                    [batch_topk_video_labels, updated_topk_video_sims_indices, update_topk_sims_non_op])
 
-                # Update top k similar videos.
-                updated_topk_video_labels_val = np.stack(
-                    [top_2k_video_labels_val[i, ind] for i, ind in enumerate(updated_topk_video_sims_indices_val)])
+                top_2k_video_labels = np.concatenate((final_topk_video_labels, batch_topk_video_labels_val), axis=1)
 
-                sess.run(update_topk_video_labels_op, feed_dict={
-                    topk_video_labels_updater: updated_topk_video_labels_val
+                # Compute and update top k similar videos in graph.
+                final_topk_video_labels = np.stack(
+                    [top_2k_video_labels[i, ind] for i, ind in enumerate(updated_topk_video_sims_indices_val)])
+
+                sess.run(update_topk_labels_non_op, feed_dict={
+                    topk_video_labels_updater: final_topk_video_labels
                 })
 
                 # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
@@ -257,11 +266,11 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         # return np.stack(clean_topk_video_ids), np.stack(clean_topk_video_labels)
         # Removed video_ids.
         # return topk_video_ids[:, 1:], topk_video_labels[:, 1:]
-        return None, updated_topk_video_labels_val[:, 1:]
+        return None, final_topk_video_labels[:, 1:]
     else:
         # Removed video_ids.
         # return topk_video_ids, topk_video_labels
-        return None, updated_topk_video_labels_val
+        return None, final_topk_video_labels
 
 
 def store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder=''):
@@ -616,7 +625,7 @@ if __name__ == '__main__':
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
     # TODO, change it.
-    flags.DEFINE_boolean('is_debug', True, 'Boolean variable to indicate debug ot not.')
+    flags.DEFINE_boolean('is_debug', False, 'Boolean variable to indicate debug ot not.')
 
     flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
