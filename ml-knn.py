@@ -61,7 +61,7 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 
-def compute_prior_prob(reader, data_pattern, smooth_para=1):
+def compute_prior_prob(reader, data_pattern, smooth_para=1.0):
     """
     Compute prior probabilities for future use in ml-knn.
     :param reader:
@@ -71,15 +71,15 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1):
     """
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
-    # Generate example queue. Traverse the queue to traverse the dataset.
-    video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-        reader=reader, data_pattern=data_pattern, batch_size=batch_size, num_readers=num_readers, num_epochs=1)
-
     num_classes = reader.num_classes
 
     with tf.Graph().as_default() as g:
         sum_labels_onehot = tf.Variable(tf.zeros([num_classes]))
         total_num_videos = tf.Variable(0, dtype=tf.float32)
+
+        # Generate example queue. Traverse the queue to traverse the dataset.
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
+            reader=reader, data_pattern=data_pattern, batch_size=batch_size, num_readers=num_readers, num_epochs=1)
 
         sum_labels_onehot_op = sum_labels_onehot.assign_add(
             tf.reduce_sum(tf.cast(video_labels_batch, tf.float32), axis=0))
@@ -353,9 +353,12 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
     reader = get_reader(model_type, feature_names, feature_sizes)
+
     """
     # Step 1. Compute prior probabilities and store the results.
+    start_time = time.time()
     sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(reader, train_data_pattern, smooth_para)
+    print('Computing prior probability took {} s.'.format(time.time() - start_time))
     store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, model_dir)
     """
 
