@@ -517,11 +517,10 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
             while not coord.should_stop():
                 # Run training steps or whatever.
                 start_time = time.time()
-                video_id_batch_val, video_batch_val, video_labels_batch_val = sess.run(
-                    [video_id_batch, video_batch, video_labels_batch])
+                video_id_batch_val, video_batch_val = sess.run(
+                    [video_id_batch, video_batch])
 
-                if debug:
-                    print('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
+                logging.debug('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
 
                 # Pass values instead of tensors.
                 topk_video_ids, topk_labels = find_k_nearest_neighbors(video_id_batch_val,
