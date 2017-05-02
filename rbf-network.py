@@ -159,8 +159,6 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
     :return: Optimized centers and corresponding average cluster-center distance and mean distance per cluster.
     """
     num_centers = len(centers)
-    if num_centers >= 40000:
-        logging.warn('Too many ({}) initial centers which can not be held in a tf graph.'.format(num_centers))
 
     if (metric == 'euclidean') or (metric == 'cosine'):
         logging.info('Perform k-means clustering using {} distance.'.format(metric))

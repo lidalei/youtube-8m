@@ -610,7 +610,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer('batch_size', 24576, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 4, 'Number of readers to form a batch.')
 
-    flags.DEFINE_string('model_dir', '/usr/ml-knn',
+    flags.DEFINE_string('model_dir', '/tmp/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
@@ -621,7 +621,7 @@ if __name__ == '__main__':
     # TODO, change it.
     flags.DEFINE_boolean('is_debug', False, 'Boolean variable to indicate debug or not.')
 
-    flags.DEFINE_string('output_file', '/usr/ml-knn/predictions.csv', 'The file to save the predictions to.')
+    flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
     flags.DEFINE_integer('top_k', 20, 'How many predictions to output per video.')
 
