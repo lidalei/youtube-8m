@@ -122,7 +122,7 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1.0):
     return sum_labels_val, total_num_videos_val, labels_prior_prob_val
 
 
-def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, batch_size=8192, k=3, debug=False):
+def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, batch_size=8192, num_readers=1, k=3):
     """
     Return k-nearest neighbors. https://www.tensorflow.org/programmers_guide/reading_data.
 
@@ -131,20 +131,19 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     :param reader:
     :param data_pattern:
     :param batch_size:
+    :param num_readers:
     :param k: int.
-    :param debug:
     :return: k-nearest videos, representing by (video_ids, video_labels)
     """
 
     num_videos = video_batch.shape[0]
     num_classes = reader.num_classes
-    num_readers = FLAGS.num_readers
     is_train = FLAGS.is_train
     # If training, k = k + 1, to avoid the video itself. Otherwise, not necessary.
     _k = int(k)
     k = (_k + 1) if is_train else _k
 
-    # Create a new graph to compute k-nearest neighbors from video_batch_inner for each video of video_batch.
+    # Create a new graph to compute k-nearest neighbors for each video of video_batch.
     with tf.Graph().as_default() as graph:
         # Define normalized video batch (features), top k similar videos' similarities and their labels sets.
         video_batch_normalized_initializer = tf.placeholder(tf.float32, video_batch.shape)
@@ -157,7 +156,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         topk_labels_initializer = tf.placeholder(tf.bool, shape=[num_videos, k, num_classes])
         topk_labels = tf.Variable(initial_value=topk_labels_initializer, collections=[], name='topk_labels')
 
-        # Generate example queue. Traverse the queue to traverse the dataset.
+        # Generate example queue. Traverse the queue to traverse the data set.
         # Works as the inner loop of finding k-nearest neighbors.
         video_id_batch_inner, video_batch_inner, video_labels_batch_inner, num_frames_batch_inner = (
             get_input_data_tensors(
@@ -193,11 +192,6 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
 
         # Initialization of global and local variables (e.g., queue epoch).
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-
-    # batch_size = int(video_id_batch.shape[0])
-    # Define variables representing k nearest video_ids, video_labels and video_similarities.
-    # Removed video_ids.
-    # topk_video_ids = None  # batch_size * [[]]
 
     # A new graph needs a new session. Thus, create one.
     with tf.Session(graph=graph) as sess:
@@ -235,7 +229,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                 #     coord.request_stop()
 
         except tf.errors.OutOfRangeError:
-            logging.info('Done the whole dataset - finding k nearest neighbors.')
+            logging.info('Done the whole data set - found k nearest neighbors.')
         finally:
             # When done, ask the threads to stop.
             coord.request_stop()
@@ -344,6 +338,7 @@ def recover_posterior_prob(k, folder=''):
 
 
 def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
+    # For debug, use a single tfrecord file (debug mode).
     train_data_pattern = '/Users/Sophie/Documents/youtube-8m-data/train/trainaW.tfrecord' \
         if debug else FLAGS.train_data_pattern
 
@@ -363,7 +358,6 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     """
 
     # Step 2. Compute posterior probabilities, actually likelihood function or sampling distribution.
-
     # Total number of classes.
     num_classes = reader.num_classes
     range_num_classes = range(num_classes)
@@ -378,9 +372,8 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
         global_step = tf.Variable(0, trainable=False, dtype=tf.int64, name='global_step')
         global_step_inc_op = global_step.assign_add(1)
 
-        # For debug, use a single tfrecord file (debug mode).
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (get_input_data_tensors(
-            reader, train_data_pattern, batch_size, num_readers=num_readers))
+            reader, train_data_pattern, batch_size, num_readers=num_readers, num_epochs=1, name_scope='outer_loop'))
 
         tf.summary.scalar('global_step', global_step)
 
@@ -388,7 +381,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
 
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
-    writer = tf.summary.FileWriter(model_dir, g)
+        writer = tf.summary.FileWriter(model_dir, g)
 
     sess = tf.Session(graph=g)
 
@@ -421,7 +414,8 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
                                                                    video_batch_val, inner_reader,
                                                                    data_pattern=train_data_pattern,
                                                                    batch_size=batch_size,
-                                                                   k=k, debug=False)
+                                                                   num_readers=num_readers,
+                                                                   k=k)
 
             logging.debug('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
             # Update count and counter_count.
@@ -437,9 +431,6 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
 
             logging.debug('count: {}\ncounter_count: {}'.format(count, counter_count))
 
-            if debug:
-                coord.request_stop()
-
             global_step_val, summary = sess.run([global_step_inc_op, summary_op])
             now = time.time()
             num_examples_processed += video_id_batch_val.shape[0]
@@ -449,7 +440,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
             writer.add_summary(summary, global_step=global_step_val)
 
     except tf.errors.OutOfRangeError:
-        logging.info('Done training -- epoch limit reached')
+        logging.info('Done training -- one epoch limit reached.')
     finally:
         # When done, ask the threads to stop.
         coord.request_stop()
@@ -501,7 +492,7 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
 
     with tf.Graph().as_default() as g:
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-            reader, test_data_pattern, batch_size, num_readers=num_readers)
+            reader, test_data_pattern, batch_size, num_readers=num_readers, num_epochs=1)
 
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
@@ -531,10 +522,12 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
                                                                        video_batch_val, inner_reader,
                                                                        data_pattern=train_data_pattern,
                                                                        batch_size=batch_size,
-                                                                       k=k, debug=False)
+                                                                       num_readers=num_readers,
+                                                                       k=k)
 
                 if debug:
                     print('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
+
                 # batch_size * delta.
                 deltas = topk_labels.astype(np.int32).sum(axis=1)
 
@@ -617,7 +610,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer('batch_size', 24576, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 4, 'Number of readers to form a batch.')
 
-    flags.DEFINE_string('model_dir', '/tmp/ml-knn',
+    flags.DEFINE_string('model_dir', '/usr/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
@@ -626,9 +619,9 @@ if __name__ == '__main__':
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
     # TODO, change it.
-    flags.DEFINE_boolean('is_debug', False, 'Boolean variable to indicate debug ot not.')
+    flags.DEFINE_boolean('is_debug', False, 'Boolean variable to indicate debug or not.')
 
-    flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
+    flags.DEFINE_string('output_file', '/usr/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
     flags.DEFINE_integer('top_k', 20, 'How many predictions to output per video.')
 
