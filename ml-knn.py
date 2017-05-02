@@ -349,13 +349,11 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
 
     reader = get_reader(model_type, feature_names, feature_sizes)
 
-    """
     # Step 1. Compute prior probabilities and store the results.
     start_time = time.time()
     sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(reader, train_data_pattern, smooth_para)
-    print('Computing prior probability took {} s.'.format(time.time() - start_time))
+    logging.info('Computing prior probability took {} s.'.format(time.time() - start_time))
     store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, model_dir)
-    """
 
     # Step 2. Compute posterior probabilities, actually likelihood function or sampling distribution.
     # Total number of classes.
@@ -406,8 +404,8 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
             video_id_batch_val, video_batch_val, video_labels_batch_val = sess.run(
                 [video_id_batch, video_batch, video_labels_batch])
 
-            logging.debug('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val,
-                                                                               video_batch_val))
+            logging.info('video_id_batch shape: {}, video_batch shape: {}'.format(video_id_batch_val.shape,
+                                                                                   video_batch_val.shape))
 
             # Pass values instead of tensors.
             topk_video_ids, topk_labels = find_k_nearest_neighbors(video_id_batch_val,
@@ -602,12 +600,12 @@ if __name__ == '__main__':
                         '/Users/Sophie/Documents/youtube-8m-data/test/test4*.tfrecord',
                         'Test data pattern, to be specified when making predictions.')
 
-    flags.DEFINE_string('feature_names', 'mean_rgb', 'Features to be used, separated by ,.')
+    flags.DEFINE_string('feature_names', 'mean_rgb,mean_audio', 'Features to be used, separated by ,.')
 
-    flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
+    flags.DEFINE_string('feature_sizes', '1024,128', 'Dimensions of features to be used, separated by ,.')
 
     # Set by the memory limit (52GB).
-    flags.DEFINE_integer('batch_size', 24576, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 40960, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 4, 'Number of readers to form a batch.')
 
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
