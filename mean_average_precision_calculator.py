@@ -42,11 +42,11 @@ import average_precision_calculator
 
 
 class MeanAveragePrecisionCalculator(object):
-  """This class is to calculate mean average precision.
+    """This class is to calculate mean average precision.
   """
 
-  def __init__(self, num_class):
-    """Construct a calculator to calculate the (macro) average precision.
+    def __init__(self, num_class):
+        """Construct a calculator to calculate the (macro) average precision.
 
     Args:
       num_class: A positive Integer specifying the number of classes.
@@ -59,17 +59,17 @@ class MeanAveragePrecisionCalculator(object):
       ValueError: An error occurred when num_class is not a positive integer;
       or the top_n_array is not a list of positive integers.
     """
-    if not isinstance(num_class, int) or num_class <= 1:
-      raise ValueError("num_class must be a positive integer.")
+        if not isinstance(num_class, int) or num_class <= 1:
+            raise ValueError("num_class must be a positive integer.")
 
-    self._ap_calculators = []  # member of AveragePrecisionCalculator
-    self._num_class = num_class  # total number of classes
-    for i in range(num_class):
-      self._ap_calculators.append(
-          average_precision_calculator.AveragePrecisionCalculator())
+        self._ap_calculators = []  # member of AveragePrecisionCalculator
+        self._num_class = num_class  # total number of classes
+        for i in range(num_class):
+            self._ap_calculators.append(
+                average_precision_calculator.AveragePrecisionCalculator())
 
-  def accumulate(self, predictions, actuals, num_positives=None):
-    """Accumulate the predictions and their ground truth labels.
+    def accumulate(self, predictions, actuals, num_positives=None):
+        """Accumulate the predictions and their ground truth labels.
 
     Args:
       predictions: A list of lists storing the prediction scores. The outer
@@ -85,28 +85,28 @@ class MeanAveragePrecisionCalculator(object):
       ValueError: An error occurred when the shape of predictions and actuals
       does not match.
     """
-    if not num_positives:
-      num_positives = [None for i in predictions.shape[1]]
+        if not num_positives:
+            num_positives = [None for i in predictions.shape[1]]
 
-    calculators = self._ap_calculators
-    for i in range(len(predictions)):
-      calculators[i].accumulate(predictions[i], actuals[i], num_positives[i])
+        calculators = self._ap_calculators
+        for i in range(len(predictions)):
+            calculators[i].accumulate(predictions[i], actuals[i], num_positives[i])
 
-  def clear(self):
-    for calculator in self._ap_calculators:
-      calculator.clear()
+    def clear(self):
+        for calculator in self._ap_calculators:
+            calculator.clear()
 
-  def is_empty(self):
-    return ([calculator.heap_size for calculator in self._ap_calculators] ==
-            [0 for _ in range(self._num_class)])
+    def is_empty(self):
+        return ([calculator.heap_size for calculator in self._ap_calculators] ==
+                [0 for _ in range(self._num_class)])
 
-  def peek_map_at_n(self):
-    """Peek the non-interpolated mean average precision at n.
+    def peek_map_at_n(self):
+        """Peek the non-interpolated mean average precision at n.
 
     Returns:
       An array of non-interpolated average precision at n (default 0) for each
       class.
     """
-    aps = [self._ap_calculators[i].peek_ap_at_n()
-           for i in range(self._num_class)]
-    return aps
+        aps = [self._ap_calculators[i].peek_ap_at_n()
+               for i in range(self._num_class)]
+        return aps
