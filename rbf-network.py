@@ -165,9 +165,8 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
     else:
         raise NotImplementedError('Only euclidean and cosine distance metrics are supported.')
 
-    graph = tf.Graph()
     # Create the graph to traverse all training data once.
-    with graph.as_default():
+    with tf.Graph().as_default() as graph:
         # Define current centers as a variable in graph and use placeholder to hold large number of centers.
         centers_initializer = tf.placeholder(tf.float32, shape=centers.shape, name='centers_initializer')
         # Setting collections=[] keeps the variable out of the GraphKeys.GLOBAL_VARIABLES collection
@@ -184,6 +183,8 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
         per_clu_count = tf.Variable(initial_value=tf.zeros([num_centers]), dtype=tf.float32)
         if return_mean_clu_dist:
             per_clu_total_dist = tf.Variable(initial_value=tf.zeros([num_centers]))
+        else:
+            per_clu_total_dist = tf.Variable(initial_value=0.0, dtype=tf.float32)
 
         # Construct data read pipeline.
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
@@ -232,11 +233,17 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
 
             total_batch_dist = tf.reduce_sum(batch_per_clu_total_dist)
         else:
+            update_per_clu_total_dist = tf.no_op()
             total_batch_dist = tf.reduce_sum(nearest_dist)
 
         update_total_dist = tf.assign_add(total_dist, total_batch_dist)
         update_per_clu_sum = tf.assign_add(per_clu_sum, batch_per_clu_sum)
         update_per_clu_count = tf.assign_add(per_clu_count, batch_per_clu_count)
+
+        # Avoid unnecessary fetches.
+        with tf.control_dependencies(
+                [update_total_dist, update_per_clu_sum, update_per_clu_count, update_per_clu_total_dist]):
+            update_non_op = tf.no_op()
 
         # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -256,53 +263,38 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
     # initializer per_clu_sum.
     sess.run(per_clu_sum.initializer, feed_dict={per_clu_sum_initializer: np.zeros_like(centers)})
 
-    # Define to avoid warning.
-    accum_total_dist = None
-    accum_per_clu_sum = None
-    accum_per_clu_count = None
-    accum_per_clu_total_dist = None
-
     # Start input enqueue threads.
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
     # TODO, deal with empty cluster situation.
-    if return_mean_clu_dist:
-        try:
-            while not coord.should_stop():
-                accum_total_dist, accum_per_clu_sum, accum_per_clu_count, accum_per_clu_total_dist = sess.run(
-                    [update_total_dist, update_per_clu_sum, update_per_clu_count, update_per_clu_total_dist])
+    try:
+        while not coord.should_stop():
+            _ = sess.run(update_non_op)
 
-        except tf.errors.OutOfRangeError:
-            logging.info('One k-means iteration done. One epoch limit reached.')
-        finally:
-            # When done, ask the threads to stop.
-            coord.request_stop()
-    else:
-        try:
-            while not coord.should_stop():
-                accum_total_dist, accum_per_clu_sum, accum_per_clu_count = sess.run(
-                    [update_total_dist, update_per_clu_sum, update_per_clu_count])
-
-        except tf.errors.OutOfRangeError:
-            logging.info('One k-means iteration done. One epoch limit reached.')
-        finally:
-            # When done, ask the threads to stop.
-            coord.request_stop()
+    except tf.errors.OutOfRangeError:
+        logging.info('One k-means iteration done. One epoch limit reached.')
+    finally:
+        # When done, ask the threads to stop.
+        coord.request_stop()
 
     # Wait for threads to finish.
     coord.join(threads)
+
+    final_total_dist, final_per_clu_sum, final_per_clu_count, final_per_clu_total_dist = sess.run(
+        [total_dist, per_clu_sum, per_clu_count, per_clu_total_dist])
+
     sess.close()
 
     # Expand to each feature.
-    accum_per_clu_count_per_feat = np.expand_dims(accum_per_clu_count, axis=1)
+    accum_per_clu_count_per_feat = np.expand_dims(final_per_clu_count, axis=1)
     if return_mean_clu_dist:
         # Numpy array divide element-wisely.
-        return ((accum_per_clu_sum / accum_per_clu_count_per_feat), accum_total_dist,
-                accum_per_clu_total_dist / accum_per_clu_count)
+        return ((final_per_clu_sum / accum_per_clu_count_per_feat), final_total_dist,
+                final_per_clu_total_dist / final_per_clu_count)
     else:
         # Numpy array divide element-wisely.
-        return (accum_per_clu_sum / accum_per_clu_count_per_feat), accum_total_dist, None
+        return (final_per_clu_sum / accum_per_clu_count_per_feat), final_total_dist, None
 
 
 def mini_batch_kmeans():
@@ -484,6 +476,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     train_data_pattern = FLAGS.train_data_pattern
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
+    output_dir = FLAGS.output_dir
 
     # distance metric, cosine or euclidean.
     dist_metric = FLAGS.dist_metric
@@ -500,9 +493,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     num_classes = reader.num_classes
 
     # Build logistic regression graph and optimize it.
-
-    graph = tf.Graph()
-    with graph.as_default():
+    with tf.Graph().as_default() as graph:
         if dist_metric == 'cosine':
             normalized_centers = centers / np.clip(np.linalg.norm(centers, axis=-1, keepdims=True), 1e-6, np.PINF)
             prototypes = tf.Variable(initial_value=normalized_centers, dtype=tf.float32)
@@ -542,7 +533,8 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
 
         lr_output = tf.matmul(rbf_fs, weights) + basis
         lr_pred_prob = tf.nn.sigmoid(lr_output, name='lr_pred_probability')
-        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=video_labels_batch, logits=lr_output, name='loss')
+        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.cast(video_labels_batch, tf.float32),
+                                                       logits=lr_output, name='loss')
 
         global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
         rough_num_examples_processed = tf.multiply(global_step, batch_size)
@@ -554,6 +546,8 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
 
         # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    # TODO, save checkpoints.
 
     sess = tf.Session(graph=graph)
     sess.run(init_op)
