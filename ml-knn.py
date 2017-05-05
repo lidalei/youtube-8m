@@ -4,14 +4,15 @@ Zhang M L, Zhou Z H. ML-KNN: A lazy learning approach to multi-label learning[J]
 Pattern recognition, 2007, 40(7): 2038-2048.
 """
 import tensorflow as tf
-import time
+import numpy as np
 
 from readers import get_reader
 from tensorflow import flags, gfile, logging, app
 from inference import format_lines
 
 import pickle
-import numpy as np
+import time
+from os.path import join as path_join
 
 FLAGS = flags.FLAGS
 
@@ -263,30 +264,30 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
 
 
 def store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder=''):
-    with open(folder + '/sum_labels.pickle', 'wb') as pickle_file:
+    with open(path_join(folder, 'sum_labels.pickle'), 'wb') as pickle_file:
         pickle.dump(sum_labels, pickle_file)
 
-    with open(folder + '/accum_num_videos.pickle', 'wb') as pickle_file:
+    with open(path_join(folder, 'accum_num_videos.pickle'), 'wb') as pickle_file:
         pickle.dump(accum_num_videos, pickle_file)
 
-    with open(folder + '/labels_prior_prob.pickle', 'wb') as pickle_file:
+    with open(path_join(folder, 'labels_prior_prob.pickle'), 'wb') as pickle_file:
         pickle.dump(labels_prior_prob, pickle_file)
 
 
 def recover_prior_prob(folder=''):
-    with open(folder + '/sum_labels.pickle', 'rb') as pickle_file:
+    with open(path_join(folder, 'sum_labels.pickle'), 'rb') as pickle_file:
         try:
             sum_labels = pickle.load(pickle_file)
         except:
             sum_labels = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
-    with open(folder + '/accum_num_videos.pickle', 'rb') as pickle_file:
+    with open(path_join(folder, 'accum_num_videos.pickle'), 'rb') as pickle_file:
         try:
             accum_num_videos = pickle.load(pickle_file)
         except:
             accum_num_videos = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
-    with open(folder + '/labels_prior_prob.pickle', 'rb') as pickle_file:
+    with open(path_join(folder, 'labels_prior_prob.pickle'), 'rb') as pickle_file:
         try:
             labels_prior_prob = pickle.load(pickle_file)
         except:
@@ -296,39 +297,39 @@ def recover_prior_prob(folder=''):
 
 
 def store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, folder=''):
-    with open(folder + '/count_{}.pickle'.format(k), 'wb') as pickle_file:
+    with open(path_join(folder, 'count_{}.pickle'.format(k)), 'wb') as pickle_file:
         pickle.dump(count, pickle_file)
 
-    with open(folder + '/counter_count_{}.pickle'.format(k), 'wb') as pickle_file:
+    with open(path_join(folder, 'counter_count_{}.pickle'.format(k)), 'wb') as pickle_file:
         pickle.dump(counter_count, pickle_file)
 
-    with open(folder + '/pos_prob_positive_{}.pickle'.format(k), 'wb') as pickle_file:
+    with open(path_join(folder, 'pos_prob_positive_{}.pickle'.format(k)), 'wb') as pickle_file:
         pickle.dump(pos_prob_positive, pickle_file)
 
-    with open(folder + '/pos_prob_negative_{}.pickle'.format(k), 'wb') as pickle_file:
+    with open(path_join(folder, 'pos_prob_negative_{}.pickle'.format(k)), 'wb') as pickle_file:
         pickle.dump(pos_prob_negative, pickle_file)
 
 
 def recover_posterior_prob(k, folder=''):
-    with open(folder + '/count_{}.pickle'.format(k), 'rb') as pickle_file:
+    with open(path_join(folder, 'count_{}.pickle'.format(k)), 'rb') as pickle_file:
         try:
             count = pickle.load(pickle_file)
         except:
             count = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
-    with open(folder + '/counter_count_{}.pickle'.format(k), 'rb') as pickle_file:
+    with open(path_join(folder, 'counter_count_{}.pickle'.format(k)), 'rb') as pickle_file:
         try:
             counter_count = pickle.load(pickle_file)
         except:
             counter_count = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
-    with open(folder + '/pos_prob_positive_{}.pickle'.format(k), 'rb') as pickle_file:
+    with open(path_join(folder, 'pos_prob_positive_{}.pickle'.format(k)), 'rb') as pickle_file:
         try:
             pos_prob_positive = pickle.load(pickle_file)
         except:
             pos_prob_positive = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
-    with open(folder + '/pos_prob_negative_{}.pickle'.format(k), 'rb') as pickle_file:
+    with open(path_join(folder, 'pos_prob_negative_{}.pickle'.format(k)), 'rb') as pickle_file:
         try:
             pos_prob_negative = pickle.load(pickle_file)
         except:
@@ -606,7 +607,7 @@ if __name__ == '__main__':
 
     # Set by the memory limit (52GB).
     flags.DEFINE_integer('batch_size', 40960, 'Size of batch processing.')
-    flags.DEFINE_integer('num_readers', 4, 'Number of readers to form a batch.')
+    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
