@@ -18,6 +18,14 @@
 import numpy
 import tensorflow as tf
 from tensorflow import logging
+import pickle
+from os.path import join as path_join
+
+# Used to locate constants dir.
+from inspect import getsourcefile
+from os.path import abspath
+
+from os.path import dirname
 
 
 def Dequantize(feat_vector, max_quantized_value=2, min_quantized_value=-2):
@@ -159,3 +167,18 @@ def GetListOfFeatureNamesAndSizes(feature_names, feature_sizes):
                       .format(len(list_of_feature_names), len(list_of_feature_sizes)))
 
     return list_of_feature_names, list_of_feature_sizes
+
+
+def partial_data_features_mean():
+    folder = dirname(abspath(getsourcefile(lambda: 0)))
+    with open(path_join(folder, 'constants/partial_data_features_mean.pickle'), 'rb') as pickle_file:
+        try:
+            features_mean = pickle.load(pickle_file)
+        except:
+            features_mean = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
+
+    return features_mean
+
+# if __name__ == '__main__':
+#     features_mean = partial_data_features_mean()
+#     print(features_mean)
