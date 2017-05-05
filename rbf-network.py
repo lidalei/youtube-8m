@@ -148,15 +148,18 @@ def random_sample(sample_ratio, reader, data_pattern, batch_size, num_readers):
 def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='cosine', return_mean_clu_dist=False):
     """
     k-means clustering one iteration.
-
-    :param centers: A list of centers (as a numpy array).
-    :param reader: Video-level features reader or frame-level features reader.
-    :param data_pattern: tf data Glob.
-    :param batch_size: How many examples to read per batch.
-    :param num_readers: How many IO threads to read examples.
-    :param metric: Distance metric, support euclidean and cosine.
-    :param return_mean_clu_dist: boolean. If True, compute mean distance per cluster. Else, return None.
-    :return: Optimized centers and corresponding average cluster-center distance and mean distance per cluster.
+    Args:
+        centers: A list of centers (as a numpy array).
+        reader: Video-level features reader or frame-level features reader.
+        data_pattern: tf data Glob.
+        batch_size: How many examples to read per batch.
+        num_readers: How many IO threads to read examples.
+        metric: Distance metric, support euclidean and cosine.
+        return_mean_clu_dist: boolean. If True, compute mean distance per cluster. Else, return None.
+    Returns:
+        Optimized centers and corresponding average cluster-center distance and mean distance per cluster.
+    Raises:
+        NotImplementedError if distance is not euclidean or cosine.
     """
     num_centers = len(centers)
 
@@ -313,24 +316,28 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=1024, num_rea
     2. And to fit output weights.
 
     This function will generate one group of centers for all labels as a whole. Be cautious with initialize_per_label.
-
-    :param num_centers_ratio: The number of centers to be decided / total number of examples that belong to label l,
-     for l = 0, ..., num_classes - 1.
-    :param reader: video-level features reader or frame-level features reader.
-    :param data_pattern: File Glob of data set.
-    :param batch_size: How many examples to handle per time.
-    :param num_readers: How many IO threads to prefetch examples.
-    :param method: The method to decide the centers. Possible choices are kmeans, online(kmeans), and lvq(learning).
-     Default is None, which represents randomly selecting a certain number of examples as centers.
-    :param metric: Distance metric, euclidean distance or cosine distance.
-    :param max_iter: The maximal number of iterations clustering to be done.
-    :param tol: The minimal reduction of objective function of clustering to be reached to stop iteration.
-    :param scaling_method: There are four choices. 1, all of them use the same sigma, the p smallest pairs of distances.
-     2, average of p nearest centers. 3, the distance to the nearest center that has a different label (Not supported!).
-     4, mean distance between this center and all of its points.
-    :param alpha: The alpha parameter that should be set heuristically. It works like a learning rate. (mu in Zhang's)
-    :param p: When scaling_method is 1 or 2, p is needed.
-    :return:
+    Args:
+        num_centers_ratio: The number of centers to be decided / total number of examples that belong to label l,
+         for l = 0, ..., num_classes - 1.
+        reader: video-level features reader or frame-level features reader.
+        data_pattern: File Glob of data set.
+        batch_size: How many examples to handle per time.
+        num_readers: How many IO threads to prefetch examples.
+        method: The method to decide the centers. Possible choices are random selection, kmeans and online(kmeans).
+         Default is None, which represents randomly selecting a certain number of examples as centers.
+        metric: Distance metric, euclidean distance or cosine distance.
+        max_iter: The maximal number of iterations clustering to be done.
+        tol: The minimal reduction of objective function of clustering to be reached to stop iteration.
+        scaling_method: There are four choices. 1, all of them use the same sigma, the p smallest pairs of distances.
+         2, average of p nearest centers. 3, distance to the nearest center that has a different label (Not supported!).
+         4, mean distance between this center and all of its points.
+        alpha: The alpha parameter that should be set heuristically. It works like a learning rate. (mu in Zhang's)
+        p: When scaling_method is 1 or 2, p is needed.
+    Returns:
+        centers (prototypes) and scaling factors (sigmas).
+    Raises:
+        ValueError if num_centers_ratio is not between 0.0 (open) and 1.0 (closed).
+        NotImplementedError if metric is not euclidean or cosine.
     """
     logging.info('Generate a group of centers for all labels. See Schwenker.')
     if num_centers_ratio <= 0.0 or num_centers_ratio >= 1.0:
@@ -353,7 +360,7 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=1024, num_rea
         logging.info('Using randomly selected centers as model prototypes (centers).')
     elif 'online' == method:
         # TODO.
-        raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
+        raise NotImplementedError('Only None (randomly select examples), online, kmeans are supported.')
     elif 'kmeans' == method:
         logging.info('Using k-means clustering result as model prototypes (centers).')
         iter_count = 0
@@ -378,10 +385,8 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=1024, num_rea
 
             obj = new_obj
 
-    elif 'lvq' == method:
-        raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
     else:
-        raise NotImplementedError('Only None (randomly select examples), online, kmeans and lvq are supported.')
+        raise NotImplementedError('Only None (randomly select examples), online, kmeans are supported.')
 
     # Compute scaling factors based on these centers.
     num_centers = len(centers)
@@ -432,6 +437,203 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=1024, num_rea
     print('Scaling factor sigmas: {}'.format(sigmas))
 
     return centers, sigmas
+
+
+def _compute_data_mean_std(reader, data_pattern, batch_size=1024, num_readers=1, tr_data_fn=None):
+    """
+    Compute mean and standard deviations per feature (column) and mean of each label.
+
+    Note:
+        From Spark StandardScaler documentation.
+        * The "unit std" is computed using the corrected sample standard deviation
+        * (https://en.wikipedia.org/wiki/Standard_deviation#Corrected_sample_standard_deviation),
+        * which is computed as the square root of the unbiased sample variance.
+    Args:
+        reader: video-level or frame-level data reader.
+        data_pattern: train set Glob pattern.
+        batch_size: How many examples to process per time.
+        num_readers: How many threads to (pre-)fetch examples.
+        tr_data_fn: a function that transforms input data.
+
+    Returns:
+        Mean values of each feature column as a numpy array of rank 1.
+        Standard deviations of each feature column as a numpy array of rank 1.
+        Mean values of each label as a numpy array of rank 1.
+    """
+    feature_names = reader.feature_names
+    feature_sizes = reader.feature_sizes
+    # Total number of features.
+    features_size = sum(feature_sizes)
+    num_classes = reader.num_classes
+
+    logging.info('Computing mean and std of {} features with sizes {} and mean of #{} labels.'.format(
+        feature_names, feature_sizes, num_classes))
+
+    # TODO, numerical stability with
+    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Computing_shifted_data.
+    # Create the graph to traverse all data once.
+    with tf.Graph().as_default() as graph:
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+            get_input_data_tensors(reader=reader, data_pattern=data_pattern, batch_size=batch_size,
+                                   num_readers=num_readers, num_epochs=1, name_scope='features_mean_std'))
+
+        video_count = tf.Variable(initial_value=0.0, name='video_count')
+        features_sum = tf.Variable(initial_value=tf.zeros([features_size]), name='features_sum')
+        features_squared_sum = tf.Variable(initial_value=tf.zeros([features_size]), name='features_squared_sum')
+        labels_sum = tf.Variable(initial_value=tf.zeros([num_classes]), name='labels_sum')
+
+        batch_video_count = tf.shape(video_batch)[0]
+        batch_features_sum = tf.reduce_sum(video_batch, axis=0, name='batch_features_sum')
+        batch_features_squared_sum = tf.reduce_sum(tf.square(video_batch), axis=0, name='batch_features_squared_sum')
+        batch_labels_sum = tf.reduce_sum(tf.cast(video_labels_batch, tf.float32), axis=0, name='batch_labels_sum')
+
+        update_video_count = tf.assign_add(video_count, batch_video_count)
+        update_features_sum = tf.assign_add(features_sum, batch_features_sum)
+        update_features_squared_sum = tf.assign_add(features_squared_sum, batch_features_squared_sum)
+        update_labels_sum = tf.assign_add(labels_sum, batch_labels_sum)
+
+        with tf.control_dependencies(
+                [update_video_count, update_features_sum, update_features_squared_sum, update_labels_sum]):
+            update_accum_non_op = tf.no_op()
+
+        # Define final results. To be run after all data have been handled.
+        features_mean = tf.divide(features_sum, video_count, name='features_mean')
+        # Corrected sample standard deviation.
+        features_variance = tf.divide(
+            tf.subtract(features_squared_sum, tf.scalar_mul(video_count, tf.square(features_mean))),
+            tf.subtract(video_count, 1.0), name='features_var')
+        features_std = tf.sqrt(features_variance, name='features_std')
+        labels_mean = tf.divide(labels_sum, video_count)
+
+        # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    # Create a session for running operations in the Graph.
+    sess = tf.Session(graph=graph)
+
+    # Initialize the variables (like the epoch counter).
+    sess.run(init_op)
+
+    # Start input enqueue threads.
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+    try:
+        while not coord.should_stop():
+            _ = sess.run(update_accum_non_op)
+
+    except tf.errors.OutOfRangeError:
+        logging.info('Done features sum and squared sum and count computation -- one epoch finished.')
+    finally:
+        # When done, ask the threads to stop.
+        coord.request_stop()
+
+    # Wait for threads to finish.
+    coord.join(threads)
+
+    # After all data have been handled, fetch the statistics.
+    features_mean_val, features_std_val, labels_mean_val = sess.run([features_mean, features_std, labels_mean])
+
+    sess.close()
+
+    return features_mean_val, features_std_val, labels_mean_val
+
+
+def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1, tr_data_fn=None, l2_reg=0.001):
+    """
+    Compute weights and biases of linear classifier using normal equation.
+    Args:
+        reader: video-level or frame-level data reader.
+        train_data_pattern: train set Glob pattern.
+        batch_size: How many examples to process per time.
+        num_readers: How many threads to (pre-)fetch examples.
+        tr_data_fn: a function that transforms input data.
+        l2_reg: How much the linear classifier weights should be penalized.
+    Returns:
+
+    """
+
+    num_classes = reader.num_classes
+    feature_names = reader.feature_names
+    logging.info('Linear regression using {} features.'.format(feature_names))
+
+    # TODO, data standardization - all features have unit variance and/or zero mean.
+    # https://stats.stackexchange.com/questions/13617/how-is-the-intercept-computed-in-glmnet
+    # self.coef_ = self.coef_ / X_std
+    # self.intercept_ = ymean - np.dot(Xmean, self.coef_.T)
+
+    # TODO, consider biases.
+    feature_sizes = reader.feature_sizes
+    feature_size = sum(feature_sizes)
+
+    # Create the graph to traverse all data once.
+    with tf.Graph().as_default() as graph:
+        # X.transpose * X
+        norm_equ_1_initializer = tf.placeholder(tf.float32, shape=[feature_size, feature_size])
+        norm_equ_1 = tf.Variable(initial_value=norm_equ_1_initializer, collections=[], name='X_Tr_X')
+
+        # X.transpose * Y
+        norm_equ_2_initializer = tf.placeholder(tf.float32, shape=[feature_size, num_classes])
+        norm_equ_2 = tf.Variable(initial_value=norm_equ_2_initializer, collections=[], name='X_Tr_Y')
+
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+            get_input_data_tensors(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
+                                   num_readers=num_readers, num_epochs=1, name_scope='linear_clf_in'))
+        if tr_data_fn is None:
+            video_batch_transformed = tf.identity(video_batch)
+        else:
+            video_batch_transformed = tr_data_fn(video_batch)
+
+        video_batch_transformed_tr = tf.matrix_transpose(video_batch_transformed, name='Tr(X)')
+        batch_norm_equ_1 = tf.matmul(video_batch_transformed_tr, video_batch_transformed)
+        # batch_norm_equ_1 = tf.add_n(tf.map_fn(lambda x: tf.einsum('i,j->ij', x, x),
+        #                                       video_batch_transformed), name='X_Tr_X')
+
+        batch_norm_equ_2 = tf.matmul(video_batch_transformed_tr, video_labels_batch)
+
+        update_norm_equ_1_op = tf.assign_add(norm_equ_1, batch_norm_equ_1)
+        update_norm_equ_2_op = tf.assign_add(norm_equ_2, batch_norm_equ_2)
+        with tf.control_dependencies([update_norm_equ_1_op, update_norm_equ_2_op]):
+            update_nor_equs = tf.no_op()
+
+        l2_reg_term = tf.diag(tf.fill([feature_size], l2_reg), name='l2_reg')
+        # X.transpose * X + lambda * Id, where d is the feature dimension.
+        norm_equ_1_with_reg = tf.add(norm_equ_1, l2_reg_term)
+
+        weights = tf.matrix_solve(norm_equ_1_with_reg, norm_equ_2, name='weights')
+
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    sess = tf.Session(graph=graph)
+    # Initialize variables.
+    sess.run(init_op)
+    sess.run([norm_equ_1.initializer, norm_equ_2.initializer], feed_dict={
+        norm_equ_1_initializer: np.zeros([feature_size, feature_size], dtype=np.float32),
+        norm_equ_2_initializer: np.zeros([feature_size, num_classes], dtype=np.float32)
+    })
+
+    # Start input enqueue threads.
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+    try:
+        while not coord.should_stop():
+            _ = sess.run(update_nor_equs)
+
+    except tf.errors.OutOfRangeError:
+        logging.info('Finished normal equation terms computation -- one epoch done.')
+    finally:
+        # When done, ask the threads to stop.
+        coord.request_stop()
+
+    # Wait for threads to finish.
+    coord.join(threads)
+
+    # Extract weights of num_classes linear classifiers. Each column corresponds to a classifier.
+    weights_val = sess.run(weights)
+    sess.close()
+
+    return weights_val
 
 
 def initialize_per_label():
@@ -487,6 +689,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     # For test, initialize(num_centers_ratio, method=None, metric='cosine', scaling_method=4)
     centers, sigmas = initialize(num_centers_ratio, reader, train_data_pattern, batch_size, num_readers,
                                  method='kmeans', metric=dist_metric, scaling_method=4)
+    # TODO, compute weights and biases of linear classifier using normal equation.
 
     num_centers = centers.shape[0]
 
@@ -535,6 +738,8 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
         lr_pred_prob = tf.nn.sigmoid(lr_output, name='lr_pred_probability')
         loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.cast(video_labels_batch, tf.float32),
                                                        logits=lr_output, name='loss')
+
+        # TODO, Add regularization.
 
         global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
         rough_num_examples_processed = tf.multiply(global_step, batch_size)
@@ -634,7 +839,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('init_learning_rate', 0.01, 'Float variable to indicate initial learning rate.')
 
-    flags.DEFINE_integer('decay_steps', 1000000,
+    flags.DEFINE_integer('decay_steps', NUM_TRAIN_EXAMPLES,
                          'Float variable indicating no. of examples to decay learning rate once.')
 
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
