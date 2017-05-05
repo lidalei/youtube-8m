@@ -19,7 +19,7 @@ import tensorflow as tf
 import time
 
 from readers import get_reader
-import utils
+from utils import partial_data_features_mean
 from tensorflow import flags, gfile, logging, app
 from inference import format_lines
 
@@ -469,7 +469,20 @@ def _compute_data_mean_std(reader, data_pattern, batch_size=1024, num_readers=1,
     logging.info('Computing mean and std of {} features with sizes {} and mean of #{} labels.'.format(
         feature_names, feature_sizes, num_classes))
 
-    # TODO, numerical stability with
+    # features_mean on partial data (600 + train files).
+    # Note, can only be used locally, not in google cloud.
+    try:
+        par_features_mean = partial_data_features_mean()
+    except IOError:
+        logging.error('Cannot locate partial_data_features_mean data file.')
+        par_features_mean = None
+
+    if par_features_mean is None:
+        approx_features_mean = np.zeros([features_size], dtype=np.float32)
+    else:
+        approx_features_mean = np.concatenate([par_features_mean[e] for e in feature_names])
+
+    # numerical stability with
     # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Computing_shifted_data.
     # Create the graph to traverse all data once.
     with tf.Graph().as_default() as graph:
@@ -482,9 +495,18 @@ def _compute_data_mean_std(reader, data_pattern, batch_size=1024, num_readers=1,
         features_squared_sum = tf.Variable(initial_value=tf.zeros([features_size]), name='features_squared_sum')
         labels_sum = tf.Variable(initial_value=tf.zeros([num_classes]), name='labels_sum')
 
-        batch_video_count = tf.shape(video_batch)[0]
-        batch_features_sum = tf.reduce_sum(video_batch, axis=0, name='batch_features_sum')
-        batch_features_squared_sum = tf.reduce_sum(tf.square(video_batch), axis=0, name='batch_features_squared_sum')
+        batch_video_count = tf.cast(tf.shape(video_batch)[0], tf.float32)
+        # Compute shift features sum and squared sum.
+        shift = tf.constant(approx_features_mean, dtype=tf.float32, name='shift')
+        if par_features_mean is None:
+            # Don't shift, though not good.
+            shifted_video_batch = tf.identity(video_batch)
+        else:
+            shifted_video_batch = tf.subtract(video_batch, shift)
+
+        batch_features_sum = tf.reduce_sum(shifted_video_batch, axis=0, name='batch_features_sum')
+        batch_features_squared_sum = tf.reduce_sum(tf.square(shifted_video_batch), axis=0,
+                                                   name='batch_features_squared_sum')
         batch_labels_sum = tf.reduce_sum(tf.cast(video_labels_batch, tf.float32), axis=0, name='batch_labels_sum')
 
         update_video_count = tf.assign_add(video_count, batch_video_count)
@@ -497,7 +519,7 @@ def _compute_data_mean_std(reader, data_pattern, batch_size=1024, num_readers=1,
             update_accum_non_op = tf.no_op()
 
         # Define final results. To be run after all data have been handled.
-        features_mean = tf.divide(features_sum, video_count, name='features_mean')
+        features_mean = tf.add(tf.divide(features_sum, video_count), shift, name='features_mean')
         # Corrected sample standard deviation.
         features_variance = tf.divide(
             tf.subtract(features_squared_sum, tf.scalar_mul(video_count, tf.square(features_mean))),
@@ -557,12 +579,12 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
     feature_names = reader.feature_names
     logging.info('Linear regression using {} features.'.format(feature_names))
 
-    # TODO, data standardization - all features have unit variance and/or zero mean.
-    # https://stats.stackexchange.com/questions/13617/how-is-the-intercept-computed-in-glmnet
-    # self.coef_ = self.coef_ / X_std
-    # self.intercept_ = ymean - np.dot(Xmean, self.coef_.T)
+    # data standardization - all features have unit variance and/or zero mean.
+    features_mean, features_std, labels_mean = _compute_data_mean_std(reader, train_data_pattern)
+    logging.debug('features_mean: {}\nfeatures_std: {}\nlabels_mean: {}'.format(features_mean,
+                                                                                features_std,
+                                                                                labels_mean))
 
-    # TODO, consider biases.
     feature_sizes = reader.feature_sizes
     feature_size = sum(feature_sizes)
 
@@ -584,18 +606,19 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
         else:
             video_batch_transformed = tr_data_fn(video_batch)
 
-        video_batch_transformed_tr = tf.matrix_transpose(video_batch_transformed, name='Tr(X)')
+        video_batch_transformed_tr = tf.matrix_transpose(video_batch_transformed, name='X_Tr')
         batch_norm_equ_1 = tf.matmul(video_batch_transformed_tr, video_batch_transformed)
         # batch_norm_equ_1 = tf.add_n(tf.map_fn(lambda x: tf.einsum('i,j->ij', x, x),
         #                                       video_batch_transformed), name='X_Tr_X')
 
-        batch_norm_equ_2 = tf.matmul(video_batch_transformed_tr, video_labels_batch)
+        batch_norm_equ_2 = tf.matmul(video_batch_transformed_tr, tf.cast(video_labels_batch, tf.float32))
 
         update_norm_equ_1_op = tf.assign_add(norm_equ_1, batch_norm_equ_1)
         update_norm_equ_2_op = tf.assign_add(norm_equ_2, batch_norm_equ_2)
         with tf.control_dependencies([update_norm_equ_1_op, update_norm_equ_2_op]):
             update_nor_equs = tf.no_op()
 
+        # After all data being handled, compute weights.
         l2_reg_term = tf.diag(tf.fill([feature_size], l2_reg), name='l2_reg')
         # X.transpose * X + lambda * Id, where d is the feature dimension.
         norm_equ_1_with_reg = tf.add(norm_equ_1, l2_reg_term)
@@ -631,9 +654,20 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
 
     # Extract weights of num_classes linear classifiers. Each column corresponds to a classifier.
     weights_val = sess.run(weights)
+    # If std of a feature is 0, the weights should be zero.
+    for idx, std in enumerate(features_std):
+        if std <= 1e-6:
+            weights_val[idx] = 0.0
+            features_std[idx] = 1.0
+
+    # https://stats.stackexchange.com/questions/13617/how-is-the-intercept-computed-in-glmnet
+    # self.coef_ = self.coef_ / X_std
+    # self.intercept_ = ymean - np.dot(Xmean, self.coef_.T)
+    biases_val = labels_mean - np.dot(features_mean, weights_val / np.expand_dims(features_std, 1))
+
     sess.close()
 
-    return weights_val
+    return weights_val, biases_val
 
 
 def initialize_per_label():
@@ -683,6 +717,10 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     # distance metric, cosine or euclidean.
     dist_metric = FLAGS.dist_metric
 
+    weights, biases = linear_classifier(reader, train_data_pattern)
+
+    logging.info('linear classifier weights with shape {}, biases with shape {}'.format(weights.shape, biases.shape))
+    """
     # num_centers = FLAGS.num_centers
     # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
     # metric is euclidean or cosine.
@@ -774,6 +812,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     # Wait for threads to finish.
     coord.join(threads)
     sess.close()
+    """
 
 
 def inference(out_file_location, top_k, debug=False):
@@ -820,9 +859,11 @@ if __name__ == '__main__':
                         '/Users/Sophie/Documents/youtube-8m-data/test/test4*.tfrecord',
                         'Test data pattern, to be specified when making predictions.')
 
-    flags.DEFINE_string('feature_names', 'mean_rgb', 'Features to be used, separated by ,.')
+    # mean_rgb,mean_audio
+    flags.DEFINE_string('feature_names', 'mean_audio', 'Features to be used, separated by ,.')
 
-    flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
+    # 1024,128
+    flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
 
     flags.DEFINE_float('num_centers_ratio', 0.001, 'The number of centers in RBF network.')
 
