@@ -177,6 +177,7 @@ def partial_data_features_mean():
         except:
             features_mean = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
+    # features_mean = {'mean_rgb': np.array([1024 floats]), 'mean_audio': np.array([128 floats])}
     return features_mean
 
 # if __name__ == '__main__':
