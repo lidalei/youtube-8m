@@ -412,8 +412,6 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
             topk_video_ids, topk_labels = find_k_nearest_neighbors(video_id_batch_val,
                                                                    video_batch_val, inner_reader,
                                                                    data_pattern=train_data_pattern,
-                                                                   batch_size=batch_size,
-                                                                   num_readers=num_readers,
                                                                    k=k)
 
             logging.debug('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
@@ -520,8 +518,6 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
                 topk_video_ids, topk_labels = find_k_nearest_neighbors(video_id_batch_val,
                                                                        video_batch_val, inner_reader,
                                                                        data_pattern=train_data_pattern,
-                                                                       batch_size=batch_size,
-                                                                       num_readers=num_readers,
                                                                        k=k)
 
                 if debug:
@@ -602,11 +598,10 @@ if __name__ == '__main__':
                         'Test data pattern, to be specified when making predictions.')
 
     flags.DEFINE_string('feature_names', 'mean_rgb,mean_audio', 'Features to be used, separated by ,.')
-
     flags.DEFINE_string('feature_sizes', '1024,128', 'Dimensions of features to be used, separated by ,.')
 
     # Set by the memory limit (52GB).
-    flags.DEFINE_integer('batch_size', 40960, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 204800, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
