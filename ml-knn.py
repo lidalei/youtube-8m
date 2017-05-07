@@ -140,8 +140,6 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     num_classes = reader.num_classes
     is_train = FLAGS.is_train
 
-    model_dir = FLAGS.model_dir
-
     # If training, k = k + 1, to avoid the video itself. Otherwise, not necessary.
     _k = int(k)
     k = (_k + 1) if is_train else _k
@@ -150,7 +148,6 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     with tf.Graph().as_default() as graph:
         global_step = tf.Variable(0, trainable=False, dtype=tf.int64, name='global_step')
         global_step_inc_op = global_step.assign_add(1)
-        tf.summary.scalar('global_step', global_step)
 
         # Define normalized video batch (features), top k similar videos' similarities and their labels sets.
         video_batch_normalized_initializer = tf.placeholder(tf.float32, video_batch.shape)
@@ -171,33 +168,37 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                 num_readers=num_readers, num_epochs=1, name_scope='inner_loop'))
 
         # normalization along the last dimension.
-        video_batch_inner_normalized = tf.nn.l2_normalize(video_batch_inner, dim=-1)
+        video_batch_inner_normalized = tf.nn.l2_normalize(video_batch_inner, dim=-1,
+                                                          name='video_batch_inner_normalized')
 
         # compute cosine similarities
-        similarities = tf.matmul(video_batch_normalized, video_batch_inner_normalized, transpose_b=True)
-        # top k similar videos per video in video_batch_normalized.
-        # values and indices are in shape [batch_size, k].
-        batch_topk_sims, batch_topk_sim_indices = tf.nn.top_k(similarities, k=k)
+        similarities = tf.matmul(video_batch_normalized, video_batch_inner_normalized, transpose_b=True,
+                                 name='similarities')
+        with tf.name_scope('batch_topk'):
+            # top k similar videos per video in video_batch_normalized.
+            # values and indices are in shape [batch_size, k].
+            batch_topk_sims, batch_topk_sim_indices = tf.nn.top_k(similarities, k=k, name='batch_topk')
 
-        batch_topk_labels = tf.gather(video_labels_batch_inner, batch_topk_sim_indices)
-
-        # Update topk_sims and labels.
-        top2k_video_sims = tf.concat([topk_sims, batch_topk_sims], 1)
-        updated_topk_sims, updated_topk_sims_indices = tf.nn.top_k(top2k_video_sims, k=k)
-        update_topk_sims_op = tf.assign(topk_sims, updated_topk_sims)
-
-        top_2k_video_labels = tf.concat([topk_labels, batch_topk_labels], 1)
-        flatten_top2k_labels = tf.reshape(top_2k_video_labels, [-1, num_classes])
-        idx_inc = tf.expand_dims(tf.range(0, num_videos * 2 * k, 2 * k, dtype=tf.int32), axis=1)
-        idx_in_flatten = tf.add(updated_topk_sims_indices, idx_inc)
-        update_topk_labels_op = tf.assign(topk_labels, tf.gather(flatten_top2k_labels, idx_in_flatten))
+            batch_topk_labels = tf.gather(video_labels_batch_inner, batch_topk_sim_indices,
+                                          name='batch_topk_labels')
+        with tf.name_scope('update_topk_sims'):
+            # Update topk_sims and labels.
+            top2k_video_sims = tf.concat([topk_sims, batch_topk_sims], 1)
+            updated_topk_sims, updated_topk_sims_indices = tf.nn.top_k(top2k_video_sims, k=k)
+            update_topk_sims_op = tf.assign(topk_sims, updated_topk_sims,
+                                            name='update_topk_sims')
+        with tf.name_scope('update_topk_labels'):
+            top_2k_video_labels = tf.concat([topk_labels, batch_topk_labels], 1, name='top_2k_video_labels')
+            flatten_top2k_labels = tf.reshape(top_2k_video_labels, [-1, num_classes])
+            idx_inc = tf.expand_dims(tf.range(0, num_videos * 2 * k, 2 * k, dtype=tf.int32), axis=1)
+            idx_in_flatten = tf.add(updated_topk_sims_indices, idx_inc)
+            update_topk_labels_op = tf.assign(topk_labels, tf.gather(flatten_top2k_labels, idx_in_flatten),
+                                              name='update_topk_labels')
 
         # Update top k similar video sims and labels.
         # To avoid fetching useless data.
         with tf.control_dependencies([global_step_inc_op, update_topk_sims_op, update_topk_labels_op]):
             update_topk_non_op = tf.no_op()
-
-        summary_op = tf.summary.merge_all()
 
         # Initialization of global and local variables (e.g., queue epoch).
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -205,8 +206,6 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     # A new graph needs a new session. Thus, create one.
     with tf.Session(graph=graph) as sess:
         sess.run(init_op)
-
-        summary_writer = tf.summary.FileWriter(model_dir, graph=sess.graph)
 
         # initialize outer video batch. Current top k similarities are -2.0 (< minimum -1.0).
         sess.run([video_batch_normalized.initializer, topk_sims.initializer, topk_labels.initializer],
@@ -226,10 +225,6 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                 # Run results are numpy arrays. Update topk_sims and tok_video_labels.
                 _, global_step_val = sess.run([update_topk_non_op, global_step])
 
-                # Each 100 steps add a summary.
-                if global_step_val % 100 == 0:
-                    summary = sess.run(summary_op)
-                    summary_writer.add_summary(summary, global_step=global_step_val)
                 # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
                 # np.stack() can be np.array().
                 # Removed video_ids.
@@ -614,7 +609,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_sizes', '1024,128', 'Dimensions of features to be used, separated by ,.')
 
     # Set by the memory limit (52GB).
-    flags.DEFINE_integer('batch_size', 204800, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 40960, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
