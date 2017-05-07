@@ -21,11 +21,13 @@ import time
 from readers import get_reader
 from utils import partial_data_features_mean
 from tensorflow import flags, gfile, logging, app
-from inference import format_lines
 
+from os.path import join as path_join
 import pickle
 import numpy as np
 import scipy.spatial.distance as sci_distance
+
+from inference import format_lines
 
 FLAGS = flags.FLAGS
 NUM_TRAIN_EXAMPLES = 4906660
@@ -168,6 +170,9 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
     else:
         raise NotImplementedError('Only euclidean and cosine distance metrics are supported.')
 
+    # The dir where intermediate results and model checkpoints should be written.
+    # output_dir = FLAGS.output_dir
+
     # Create the graph to traverse all training data once.
     with tf.Graph().as_default() as graph:
         # Define current centers as a variable in graph and use placeholder to hold large number of centers.
@@ -304,10 +309,6 @@ def mini_batch_kmeans():
     pass
 
 
-def dbscan():
-    pass
-
-
 def initialize(num_centers_ratio, reader, data_pattern, batch_size=1024, num_readers=1,
                method=None, metric='cosine', max_iter=20, tol=1.0, scaling_method=1, alpha=0.1, p=3):
     """
@@ -340,18 +341,18 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=1024, num_rea
         NotImplementedError if metric is not euclidean or cosine.
     """
     logging.info('Generate a group of centers for all labels. See Schwenker.')
-    if num_centers_ratio <= 0.0 or num_centers_ratio >= 1.0:
+    if num_centers_ratio <= 0.0 or num_centers_ratio > 1.0:
         raise ValueError('num_centers_ratio must be larger than 0.0 and no greater than 1.0.')
-
     logging.info('num_centers_ratio is {}.'.format(num_centers_ratio))
+
     if ('euclidean' == metric) or ('cosine' == metric):
         logging.info('Using {} distance. The larger, the less similar.'.format(metric))
     else:
-        raise NotImplementedError('Only euclidean distance and cosine distance are supported.')
+        raise NotImplementedError('Only euclidean and cosine distance are supported, {} passed.'.format(metric))
 
     centers = random_sample(num_centers_ratio, reader, data_pattern, batch_size, num_readers)
+    logging.info('Sampled {} centers totally.'.format(len(centers)))
     logging.debug('Randomly selected centers: {}'.format(centers))
-    print('Sampled {} centers totally.'.format(len(centers)))
 
     # Used in scaling method 4.
     per_clu_mean_dist = None
@@ -699,12 +700,15 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     """
     Training.
 
-    :param init_learning_rate: Initial learning rate.
-    :param decay_steps: How many training steps to decay learning rate once.
-    :param decay_rate: How much to decay learning rate.
-    :param epochs: The maximal epochs to pass all training data.
-    :param debug: boolean, True to print detailed debug information, False, silent.
-    :return:
+    Args:
+        init_learning_rate: Initial learning rate.
+        decay_steps: How many training steps to decay learning rate once.
+        decay_rate: How much to decay learning rate.
+        epochs: The maximal epochs to pass all training data.
+        debug: boolean, True to print detailed debug information, False, silent.
+
+    Returns:
+
     """
     num_centers_ratio = FLAGS.num_centers_ratio
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
@@ -712,23 +716,25 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     train_data_pattern = FLAGS.train_data_pattern
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
+    # The dir where intermediate results and model checkpoints should be written.
     output_dir = FLAGS.output_dir
 
     # distance metric, cosine or euclidean.
     dist_metric = FLAGS.dist_metric
 
-    weights, biases = linear_classifier(reader, train_data_pattern)
-
-    logging.info('linear classifier weights with shape {}, biases with shape {}'.format(weights.shape, biases.shape))
+    """
+    # TODO, compute weights and biases of linear classifier using normal equation.
+    # TODO, check normal equation used can be used when data are not centered or not.
+    # weights, biases = linear_classifier(reader, train_data_pattern)
+    # logging.info('linear classifier weights with shape {}, biases with shape {}'.format(weights.shape, biases.shape))
     """
     # num_centers = FLAGS.num_centers
     # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
     # metric is euclidean or cosine.
-    # For test, initialize(num_centers_ratio, method=None, metric='cosine', scaling_method=4)
     centers, sigmas = initialize(num_centers_ratio, reader, train_data_pattern, batch_size, num_readers,
                                  method='kmeans', metric=dist_metric, scaling_method=4)
-    # TODO, compute weights and biases of linear classifier using normal equation.
 
+    """
     num_centers = centers.shape[0]
 
     num_classes = reader.num_classes
@@ -827,6 +833,7 @@ def main(unused_argv):
 
     train_epochs = FLAGS.train_epochs
     is_tuning_hyper_para = FLAGS.is_tuning_hyper_para
+
     is_debug = FLAGS.is_debug
 
     output_file = FLAGS.output_file
@@ -865,16 +872,13 @@ if __name__ == '__main__':
     # 1024,128
     flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
 
-    flags.DEFINE_float('num_centers_ratio', 0.001, 'The number of centers in RBF network.')
-
     # Set by the memory limit (52GB).
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
 
-    flags.DEFINE_string('dist_metric', 'cosine', 'Distance metric, cosine or euclidean.')
+    flags.DEFINE_float('num_centers_ratio', 0.001, 'The number of centers in RBF network.')
 
-    flags.DEFINE_string('output_dir', '/tmp/ml-knn/',
-                        'The directory to which prior and posterior probabilities should be written.')
+    flags.DEFINE_string('dist_metric', 'cosine', 'Distance metric, cosine or euclidean.')
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
 
@@ -890,8 +894,12 @@ if __name__ == '__main__':
     flags.DEFINE_boolean('is_tuning_hyper_para', False,
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
+    # Added current timestamp.
+    flags.DEFINE_string('output_dir', '/tmp/ml-knn-{}'.format(int(time.time())),
+                        'The directory where intermediate and model checkpoints should be written.')
+
     # TODO, change it.
-    flags.DEFINE_boolean('is_debug', True, 'Boolean variable to indicate debug ot not.')
+    flags.DEFINE_boolean('is_debug', True, 'Boolean variable to indicate debug or not.')
 
     flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
