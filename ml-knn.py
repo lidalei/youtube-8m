@@ -136,16 +136,22 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     :param k: int.
     :return: k-nearest videos, representing by (video_ids, video_labels)
     """
-
     num_videos = video_batch.shape[0]
     num_classes = reader.num_classes
     is_train = FLAGS.is_train
+
+    model_dir = FLAGS.model_dir
+
     # If training, k = k + 1, to avoid the video itself. Otherwise, not necessary.
     _k = int(k)
     k = (_k + 1) if is_train else _k
 
     # Create a new graph to compute k-nearest neighbors for each video of video_batch.
     with tf.Graph().as_default() as graph:
+        global_step = tf.Variable(0, trainable=False, dtype=tf.int64, name='global_step')
+        global_step_inc_op = global_step.assign_add(1)
+        tf.summary.scalar('global_step', global_step)
+
         # Define normalized video batch (features), top k similar videos' similarities and their labels sets.
         video_batch_normalized_initializer = tf.placeholder(tf.float32, video_batch.shape)
         video_batch_normalized = tf.Variable(initial_value=video_batch_normalized_initializer, trainable=False,
@@ -188,8 +194,10 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
 
         # Update top k similar video sims and labels.
         # To avoid fetching useless data.
-        with tf.control_dependencies([update_topk_sims_op, update_topk_labels_op]):
+        with tf.control_dependencies([global_step_inc_op, update_topk_sims_op, update_topk_labels_op]):
             update_topk_non_op = tf.no_op()
+
+        summary_op = tf.summary.merge_all()
 
         # Initialization of global and local variables (e.g., queue epoch).
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
@@ -197,6 +205,9 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
     # A new graph needs a new session. Thus, create one.
     with tf.Session(graph=graph) as sess:
         sess.run(init_op)
+
+        summary_writer = tf.summary.FileWriter(model_dir, graph=sess.graph)
+
         # initialize outer video batch. Current top k similarities are -2.0 (< minimum -1.0).
         sess.run([video_batch_normalized.initializer, topk_sims.initializer, topk_labels.initializer],
                  feed_dict={
@@ -213,8 +224,12 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         try:
             while not coord.should_stop():
                 # Run results are numpy arrays. Update topk_sims and tok_video_labels.
-                _ = sess.run(update_topk_non_op)
+                _, global_step_val = sess.run([update_topk_non_op, global_step])
 
+                # Each 100 steps add a summary.
+                if global_step_val % 100 == 0:
+                    summary = sess.run(summary_op)
+                    summary_writer.add_summary(summary, global_step=global_step_val)
                 # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
                 # np.stack() can be np.array().
                 # Removed video_ids.
@@ -380,15 +395,13 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
 
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
-        writer = tf.summary.FileWriter(model_dir, g)
-
     sess = tf.Session(graph=g)
 
     sess.run(init_op)
 
-    inner_reader = get_reader(model_type, feature_names, feature_sizes)
+    writer = tf.summary.FileWriter(model_dir, graph=sess.graph)
 
-    # TODO, add a train.Saver.
+    inner_reader = get_reader(model_type, feature_names, feature_sizes)
 
     # Be cautious to not be blocked by queue.
     # Start input enqueue threads.
