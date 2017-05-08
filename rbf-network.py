@@ -64,7 +64,7 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
             raise IOError("Unable to find input files. data_pattern='{}'".format(data_pattern))
         logging.info("Number of input files: {}".format(len(files)))
         # Pass test data once. Thus, num_epochs is set as 1.
-        filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=False)
+        filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=False, capacity=128)
         examples_and_labels = [reader.prepare_reader(filename_queue) for _ in range(num_readers)]
 
         # In shuffle_batch_join,
@@ -647,6 +647,8 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
 
             weights_biases = tf.matrix_solve(final_norm_equ_1, final_norm_equ_2, name='weights_biases')
 
+        summary_op = tf.summary.merge_all()
+
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
     sess = tf.Session(graph=graph)
@@ -657,14 +659,16 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
         norm_equ_2_initializer: np.zeros([feature_size, num_classes], dtype=np.float32)
     })
 
+    summary_writer = tf.summary.FileWriter(path_join(output_dir, 'linear_classifier'), graph=sess.graph)
+
     # Start input enqueue threads.
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
     try:
         while not coord.should_stop():
-            sess.run(update_equ_non_op)
-
+            _, summary, global_step_val = sess.run([update_equ_non_op, summary_op, global_step])
+            summary_writer.add_summary(summary, global_step=global_step_val)
     except tf.errors.OutOfRangeError:
         logging.info('Finished normal equation terms computation -- one epoch done.')
     finally:
@@ -734,7 +738,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     dist_metric = FLAGS.dist_metric
 
     # Compute weights and biases of linear classifier using normal equation.
-    weights_biases = linear_classifier(reader, train_data_pattern)
+    weights_biases = linear_classifier(reader, train_data_pattern, batch_size=batch_size, num_readers=2)
     logging.info('linear classifier weights_biases with shape {}'.format(weights_biases.shape))
     logging.info('linear classifier weights_biases: {}.'.format(weights_biases))
     """
@@ -884,7 +888,7 @@ if __name__ == '__main__':
 
     # Set by the memory limit (52GB).
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
-    flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
+    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_float('num_centers_ratio', 0.001, 'The number of centers in RBF network.')
 
