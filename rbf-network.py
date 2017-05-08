@@ -572,25 +572,24 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
         num_readers: How many threads to (pre-)fetch examples.
         tr_data_fn: a function that transforms input data.
         l2_reg: How much the linear classifier weights should be penalized.
-    Returns:
+    Returns: Weights and biases fit on the given data set, where biases are appended as the last row.
 
     """
-
     num_classes = reader.num_classes
     feature_names = reader.feature_names
     logging.info('Linear regression using {} features.'.format(feature_names))
 
-    # data standardization - all features have unit variance and/or zero mean.
-    features_mean, features_std, labels_mean = _compute_data_mean_std(reader, train_data_pattern)
-    logging.debug('features_mean: {}\nfeatures_std: {}\nlabels_mean: {}'.format(features_mean,
-                                                                                features_std,
-                                                                                labels_mean))
+    output_dir = FLAGS.output_dir
 
+    # Method two - append an all-one column to X.
     feature_sizes = reader.feature_sizes
     feature_size = sum(feature_sizes)
 
     # Create the graph to traverse all data once.
     with tf.Graph().as_default() as graph:
+        global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
+        global_step_inc_op = tf.assign_add(global_step, 1)
+
         # X.transpose * X
         norm_equ_1_initializer = tf.placeholder(tf.float32, shape=[feature_size, feature_size])
         norm_equ_1 = tf.Variable(initial_value=norm_equ_1_initializer, collections=[], name='X_Tr_X')
@@ -599,32 +598,54 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
         norm_equ_2_initializer = tf.placeholder(tf.float32, shape=[feature_size, num_classes])
         norm_equ_2 = tf.Variable(initial_value=norm_equ_2_initializer, collections=[], name='X_Tr_Y')
 
+        video_count = tf.Variable(initial_value=0.0, name='video_count')
+        features_sum = tf.Variable(initial_value=tf.zeros([feature_size]), name='features_sum')
+        labels_sum = tf.Variable(initial_value=tf.zeros([num_classes]), name='labels_sum')
+
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
             get_input_data_tensors(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
-                                   num_readers=num_readers, num_epochs=1, name_scope='linear_clf_in'))
+                                   num_readers=num_readers, num_epochs=1, name_scope='input'))
         if tr_data_fn is None:
             video_batch_transformed = tf.identity(video_batch)
         else:
             video_batch_transformed = tr_data_fn(video_batch)
 
-        video_batch_transformed_tr = tf.matrix_transpose(video_batch_transformed, name='X_Tr')
-        batch_norm_equ_1 = tf.matmul(video_batch_transformed_tr, video_batch_transformed)
-        # batch_norm_equ_1 = tf.add_n(tf.map_fn(lambda x: tf.einsum('i,j->ij', x, x),
-        #                                       video_batch_transformed), name='X_Tr_X')
+        with tf.name_scope('batch_increment'):
+            video_batch_transformed_tr = tf.matrix_transpose(video_batch_transformed, name='X_Tr')
+            batch_norm_equ_1 = tf.matmul(video_batch_transformed_tr, video_batch_transformed)
+            # batch_norm_equ_1 = tf.add_n(tf.map_fn(lambda x: tf.einsum('i,j->ij', x, x),
+            #                                       video_batch_transformed), name='X_Tr_X')
+            batch_norm_equ_2 = tf.matmul(video_batch_transformed_tr, tf.cast(video_labels_batch, tf.float32))
+            batch_video_count = tf.cast(tf.shape(video_batch)[0], tf.float32)
+            batch_features_sum = tf.reduce_sum(video_batch, axis=0, name='batch_features_sum')
+            batch_labels_sum = tf.reduce_sum(tf.cast(video_labels_batch, tf.float32), axis=0, name='batch_labels_sum')
 
-        batch_norm_equ_2 = tf.matmul(video_batch_transformed_tr, tf.cast(video_labels_batch, tf.float32))
+        with tf.name_scope('update_ops'):
+            update_norm_equ_1_op = tf.assign_add(norm_equ_1, batch_norm_equ_1)
+            update_norm_equ_2_op = tf.assign_add(norm_equ_2, batch_norm_equ_2)
+            update_video_count = tf.assign_add(video_count, batch_video_count)
+            update_features_sum = tf.assign_add(features_sum, batch_features_sum)
+            update_labels_sum = tf.assign_add(labels_sum, batch_labels_sum)
 
-        update_norm_equ_1_op = tf.assign_add(norm_equ_1, batch_norm_equ_1)
-        update_norm_equ_2_op = tf.assign_add(norm_equ_2, batch_norm_equ_2)
-        with tf.control_dependencies([update_norm_equ_1_op, update_norm_equ_2_op]):
-            update_nor_equs = tf.no_op()
+        with tf.control_dependencies([update_norm_equ_1_op, update_norm_equ_2_op, update_video_count,
+                                      update_features_sum, update_labels_sum, global_step_inc_op]):
+            update_equ_non_op = tf.no_op(name='unified_update_op')
 
-        # After all data being handled, compute weights.
-        l2_reg_term = tf.diag(tf.fill([feature_size], l2_reg), name='l2_reg')
-        # X.transpose * X + lambda * Id, where d is the feature dimension.
-        norm_equ_1_with_reg = tf.add(norm_equ_1, l2_reg_term)
+        with tf.name_scope('solution'):
+            # After all data being handled, compute weights.
+            l2_reg_term = tf.diag(tf.fill([feature_size], l2_reg), name='l2_reg')
+            # X.transpose * X + lambda * Id, where d is the feature dimension.
+            norm_equ_1_with_reg = tf.add(norm_equ_1, l2_reg_term)
 
-        weights = tf.matrix_solve(norm_equ_1_with_reg, norm_equ_2, name='weights')
+            # Concat other blocks to form the final norm equation terms.
+            final_norm_equ_1_top = tf.concat([norm_equ_1_with_reg, tf.expand_dims(features_sum, 1)], 1)
+            final_norm_equ_1_bot = tf.concat([features_sum, tf.expand_dims(video_count, 0)], 0)
+            final_norm_equ_1 = tf.concat([final_norm_equ_1_top, tf.expand_dims(final_norm_equ_1_bot, 0)], 0,
+                                         name='norm_equ_1')
+            final_norm_equ_2 = tf.concat([norm_equ_2, tf.expand_dims(labels_sum, 0)], 0,
+                                         name='norm_equ_2')
+
+            weights_biases = tf.matrix_solve(final_norm_equ_1, final_norm_equ_2, name='weights_biases')
 
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
@@ -642,7 +663,7 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
 
     try:
         while not coord.should_stop():
-            _ = sess.run(update_nor_equs)
+            sess.run(update_equ_non_op)
 
     except tf.errors.OutOfRangeError:
         logging.info('Finished normal equation terms computation -- one epoch done.')
@@ -654,21 +675,11 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
     coord.join(threads)
 
     # Extract weights of num_classes linear classifiers. Each column corresponds to a classifier.
-    weights_val = sess.run(weights)
-    # If std of a feature is 0, the weights should be zero.
-    for idx, std in enumerate(features_std):
-        if std <= 1e-6:
-            weights_val[idx] = 0.0
-            features_std[idx] = 1.0
-
-    # https://stats.stackexchange.com/questions/13617/how-is-the-intercept-computed-in-glmnet
-    # self.coef_ = self.coef_ / X_std
-    # self.intercept_ = ymean - np.dot(Xmean, self.coef_.T)
-    biases_val = labels_mean - np.dot(features_mean, weights_val / np.expand_dims(features_std, 1))
+    weights_biases_val = sess.run(weights_biases)
 
     sess.close()
 
-    return weights_val, biases_val
+    return weights_biases_val
 
 
 def initialize_per_label():
@@ -722,18 +733,17 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     # distance metric, cosine or euclidean.
     dist_metric = FLAGS.dist_metric
 
-    """
-    # TODO, compute weights and biases of linear classifier using normal equation.
-    # TODO, check normal equation used can be used when data are not centered or not.
-    # weights, biases = linear_classifier(reader, train_data_pattern)
-    # logging.info('linear classifier weights with shape {}, biases with shape {}'.format(weights.shape, biases.shape))
+    # Compute weights and biases of linear classifier using normal equation.
+    weights_biases = linear_classifier(reader, train_data_pattern)
+    logging.info('linear classifier weights_biases with shape {}'.format(weights_biases.shape))
+    logging.info('linear classifier weights_biases: {}.'.format(weights_biases))
     """
     # num_centers = FLAGS.num_centers
     # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
     # metric is euclidean or cosine.
     centers, sigmas = initialize(num_centers_ratio, reader, train_data_pattern, batch_size, num_readers,
                                  method='kmeans', metric=dist_metric, scaling_method=4)
-
+    """
     """
     num_centers = centers.shape[0]
 
