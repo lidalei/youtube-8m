@@ -81,17 +81,29 @@ def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 
-def random_sample(sample_ratio, reader, data_pattern, batch_size, num_readers):
+def random_sample(sample_ratio, mask=(True, True, True, True),
+                  reader=None, data_pattern=None, batch_size=2048, num_readers=2):
     """
     Randomly sample sample_ratio examples from data that specified reader by and data_pattern.
-
-    :param sample_ratio: The ratio of examples to be sampled.
-    :param reader: See readers.py.
-    :param data_pattern: File Glob of data.
-    :param batch_size: The size of a batch. The last a few batches might have less examples.
-    :param num_readers: How many IO threads to enqueue example queue.
-    :return: Might not the exact ratio of examples be returned.
+    Args:
+        sample_ratio: The ratio of examples to be sampled. Range (0, 1.0].
+        mask: To keep which part or parts of video information, namely, id, features, labels and num of frames.
+        reader: See readers.py.
+        data_pattern: File Glob of data.
+        batch_size: The size of a batch. The last a few batches might have less examples.
+        num_readers: How many IO threads to enqueue example queue.
+    Returns:
+        Roughly the ratio of examples will be returned. If a part is not demanded, the corresponding part is None.
+    Raises:
+        ValueError, if sample_ratio is not larger than 0.0 or greater than 1.0. Or mask has not exactly 4 elements. Or
+            mask does not have one True.
     """
+    if (sample_ratio <= 0.0) or (sample_ratio > 1.0):
+        raise ValueError('Invalid sample ratio: {}'.format(sample_ratio))
+
+    if (len(mask) != 4) or all(not e for e in mask):
+        raise ValueError('Invalid mask argument, require a tuple with exactly 4 boolean values and at least one True.')
+
     # Create the graph to traverse all data once.
     with tf.Graph().as_default() as graph:
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
@@ -101,35 +113,58 @@ def random_sample(sample_ratio, reader, data_pattern, batch_size, num_readers):
         num_batch_videos = tf.shape(video_batch)[0]
         rnd_nums = tf.random_uniform([num_batch_videos])
         sample_mask = tf.less_equal(rnd_nums, sample_ratio)
-        partial_sample = tf.boolean_mask(video_batch, sample_mask)
+
+        if mask[0]:
+            video_id_partial_sample = tf.boolean_mask(video_id_batch, sample_mask)
+        else:
+            video_id_partial_sample = tf.no_op('no_video_id')
+
+        if mask[1]:
+            video_partial_sample = tf.boolean_mask(video_batch, sample_mask)
+        else:
+            video_partial_sample = tf.no_op('no_video_features')
+
+        if mask[2]:
+            video_labels_partial_sample = tf.boolean_mask(video_labels_batch, sample_mask)
+        else:
+            video_labels_partial_sample = tf.no_op('no_video_labels')
+
+        if mask[3]:
+            num_frames_partial_sample = tf.boolean_mask(num_frames_batch, sample_mask)
+        else:
+            num_frames_partial_sample = tf.no_op('no_video_num_frames')
+
+        partial_sample = [video_id_partial_sample, video_partial_sample,
+                          video_labels_partial_sample, num_frames_partial_sample]
 
         # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
+    graph.finalize()
+
     # Create a session for running operations in the Graph.
     sess = tf.Session(graph=graph)
-
     # Initialize the variables (like the epoch counter).
     sess.run(init_op)
 
+    output_dir = FLAGS.output_dir
+    tf.train.write_graph(sess.graph, path_join(output_dir, 'rnd_sample'),
+                         '{}.pb'.format(int(time.time())), as_text=False)
+
     # Find num_centers_ratio of the total examples.
-    sample = []
+    accum_sample = [[], [], [], []]
     # Start input enqueue threads.
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
     try:
         while not coord.should_stop():
-            # Remove num_batch_videos_val and num_batch_videos.
-            # num_batch_videos_val, partial_sample_val = sess.run([num_batch_videos, partial_sample])
-            # print('length of video_batch: {}'.format(num_batch_videos_val))
+            # Sample once.
             partial_sample_val = sess.run(partial_sample)
 
-            # print('partial_sample_val: {}'.format(partial_sample_val))
-            # print('magnitude of examples: {}'.format(np.linalg.norm(partial_sample_val, ord=2, axis=1)))
-
-            if partial_sample_val.size > 0:
-                sample.append(partial_sample_val)
+            for idx, indicator in enumerate(mask):
+                if indicator and partial_sample_val[idx].size > 0:
+                    accum_sample[idx].append(partial_sample_val[idx])
 
     except tf.errors.OutOfRangeError:
         logging.info('Done sampling -- one epoch finished.')
@@ -141,8 +176,13 @@ def random_sample(sample_ratio, reader, data_pattern, batch_size, num_readers):
     coord.join(threads)
     sess.close()
 
-    a_sample = np.concatenate(sample, axis=0)
-    logging.info('The sample has shape: {}.'.format(a_sample.shape))
+    a_sample = [None, None, None, None]
+
+    for idx, indicator in enumerate(mask):
+        if indicator:
+            a_sample[idx] = np.concatenate(accum_sample[idx], axis=0)
+
+    logging.info('The sample result has shape {}.'.format([e.shape if e is not None else e for e in a_sample]))
 
     return a_sample
 
@@ -163,6 +203,7 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
     Raises:
         NotImplementedError if distance is not euclidean or cosine.
     """
+    logging.info('Entering k-means iter ...')
     num_centers = len(centers)
 
     if (metric == 'euclidean') or (metric == 'cosine'):
@@ -294,6 +335,7 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
 
     sess.close()
 
+    logging.info('Exiting k-means iter ...')
     # Expand to each feature.
     accum_per_clu_count_per_feat = np.expand_dims(final_per_clu_count, axis=1)
     if return_mean_clu_dist:
@@ -309,7 +351,7 @@ def mini_batch_kmeans():
     pass
 
 
-def initialize(num_centers_ratio, reader, data_pattern, batch_size=1024, num_readers=1,
+def initialize(num_centers_ratio, reader, data_pattern, batch_size=2048, num_readers=2,
                method=None, metric='cosine', max_iter=20, tol=1.0, scaling_method=1, alpha=0.1, p=3):
     """
     This functions implements the following two phases:
@@ -350,7 +392,9 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=1024, num_rea
     else:
         raise NotImplementedError('Only euclidean and cosine distance are supported, {} passed.'.format(metric))
 
-    centers = random_sample(num_centers_ratio, reader, data_pattern, batch_size, num_readers)
+    _, centers, _, _ = random_sample(num_centers_ratio, mask=(False, True, False, False),
+                                     reader=reader, data_pattern=data_pattern,
+                                     batch_size=batch_size, num_readers=num_readers)
     logging.info('Sampled {} centers totally.'.format(len(centers)))
     logging.debug('Randomly selected centers: {}'.format(centers))
 
@@ -435,7 +479,7 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=1024, num_rea
     else:
         raise NotImplementedError('Only three methods are supported. Please read the documentation.')
 
-    print('Scaling factor sigmas: {}'.format(sigmas))
+    logging.debug('Scaling factor sigmas: {}'.format(sigmas))
 
     return centers, sigmas
 
@@ -562,29 +606,59 @@ def _compute_data_mean_std(reader, data_pattern, batch_size=1024, num_readers=1,
     return features_mean_val, features_std_val, labels_mean_val
 
 
-def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1, tr_data_fn=None, l2_reg=0.001):
+def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1, tr_data_fn=None, l2_regs=None,
+                      validate_set=None, line_search=True):
     """
-    Compute weights and biases of linear classifier using normal equation.
+    Compute weights and biases of linear classifier using normal equation. With line search for best l2_reg.
     Args:
         reader: video-level or frame-level data reader.
         train_data_pattern: train set Glob pattern.
         batch_size: How many examples to process per time.
         num_readers: How many threads to (pre-)fetch examples.
         tr_data_fn: a function that transforms input data.
-        l2_reg: How much the linear classifier weights should be penalized.
+        l2_regs: An array, each element represents how much the linear classifier weights should be penalized.
+        validate_set: (data, labels) with dtype float32. The data set (numpy arrays) used to choose the best l2_reg.
+            Sampled from whole validate set if necessary. If line_search is False, this argument is simply ignored.
+        line_search: Boolean argument representing whether to do boolean search.
+
     Returns: Weights and biases fit on the given data set, where biases are appended as the last row.
 
     """
-    num_classes = reader.num_classes
-    feature_names = reader.feature_names
-    logging.info('Linear regression using {} features.'.format(feature_names))
-
+    logging.info('Entering linear classifier ...')
     output_dir = FLAGS.output_dir
 
-    # Method two - append an all-one column to X.
+    num_classes = reader.num_classes
+    feature_names = reader.feature_names
     feature_sizes = reader.feature_sizes
     feature_size = sum(feature_sizes)
+    logging.info('Linear regression uses {} features with dims {}.'.format(feature_names, feature_sizes))
 
+    if line_search:
+        # Both l2_regs and validate_set are required.
+        if l2_regs is None:
+            raise ValueError('There is no l2_regs to do line search.')
+        else:
+            logging.info('l2_regs is {}.'.format(l2_regs))
+
+        if validate_set is None:
+            raise ValueError('There is no validate_set to do line search for l2_reg.')
+        else:
+            validate_data, validate_labels = validate_set
+            logging.info('validate_data has shape {}, validate_labels has shape {}.'.format(validate_data.shape,
+                                                                                            validate_labels.shape))
+
+            if (validate_data.shape[-1] != feature_size) or (validate_labels.shape[-1] != num_classes):
+                raise ValueError('validate_set shape does not conforms with training set.')
+    else:
+        # Simply fit the training set. Make l2_regs have only one element. And ignore validate_set.
+        if l2_regs is None:
+            l2_regs = 0.001
+        logging.info('No line search, l2_regs is {}.'.format(l2_regs))
+        # Important! To make the graph construction successful.
+        validate_data = np.zeros([1, feature_size], dtype=np.float32)
+        validate_labels = np.zeros([1, num_classes], dtype=np.float32)
+
+    # Method - append an all-one col to X by using block matrix multiplication (all-one col is treated as a block).
     # Create the graph to traverse all data once.
     with tf.Graph().as_default() as graph:
         global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
@@ -612,13 +686,14 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
 
         with tf.name_scope('batch_increment'):
             video_batch_transformed_tr = tf.matrix_transpose(video_batch_transformed, name='X_Tr')
+            video_labels_batch_cast = tf.cast(video_labels_batch, tf.float32)
             batch_norm_equ_1 = tf.matmul(video_batch_transformed_tr, video_batch_transformed)
             # batch_norm_equ_1 = tf.add_n(tf.map_fn(lambda x: tf.einsum('i,j->ij', x, x),
             #                                       video_batch_transformed), name='X_Tr_X')
-            batch_norm_equ_2 = tf.matmul(video_batch_transformed_tr, tf.cast(video_labels_batch, tf.float32))
+            batch_norm_equ_2 = tf.matmul(video_batch_transformed_tr, video_labels_batch_cast)
             batch_video_count = tf.cast(tf.shape(video_batch)[0], tf.float32)
             batch_features_sum = tf.reduce_sum(video_batch, axis=0, name='batch_features_sum')
-            batch_labels_sum = tf.reduce_sum(tf.cast(video_labels_batch, tf.float32), axis=0, name='batch_labels_sum')
+            batch_labels_sum = tf.reduce_sum(video_labels_batch_cast, axis=0, name='batch_labels_sum')
 
         with tf.name_scope('update_ops'):
             update_norm_equ_1_op = tf.assign_add(norm_equ_1, batch_norm_equ_1)
@@ -633,7 +708,8 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
 
         with tf.name_scope('solution'):
             # After all data being handled, compute weights.
-            l2_reg_term = tf.diag(tf.fill([feature_size], l2_reg), name='l2_reg')
+            l2_reg_ph = tf.placeholder(tf.float32, shape=[])
+            l2_reg_term = tf.diag(tf.fill([feature_size], l2_reg_ph), name='l2_reg')
             # X.transpose * X + lambda * Id, where d is the feature dimension.
             norm_equ_1_with_reg = tf.add(norm_equ_1, l2_reg_term)
 
@@ -645,7 +721,24 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
             final_norm_equ_2 = tf.concat([norm_equ_2, tf.expand_dims(labels_sum, 0)], 0,
                                          name='norm_equ_2')
 
+            # The last row is the biases.
             weights_biases = tf.matrix_solve(final_norm_equ_1, final_norm_equ_2, name='weights_biases')
+
+            weights = weights_biases[:-1]
+            biases = weights_biases[-1]
+
+        with tf.name_scope('validate_loss'):
+            validate_x_initializer = tf.placeholder(tf.float32, shape=validate_data.shape)
+            validate_x = tf.Variable(initial_value=validate_x_initializer, trainable=False, collections=[],
+                                     name='validate_data')
+
+            validate_y_initializer = tf.placeholder(tf.float32, shape=validate_labels.shape)
+            validate_y = tf.Variable(initial_value=validate_y_initializer, trainable=False, collections=[],
+                                     name='validate_labels')
+
+            predictions = tf.matmul(validate_x, weights) + biases
+            loss = tf.sqrt(tf.reduce_mean(tf.square(tf.subtract(predictions, validate_y))), name='rmse')
+            # pred_labels = tf.greater_equal(predictions, 0.0, name='pred_labels')
 
         summary_op = tf.summary.merge_all()
 
@@ -678,12 +771,37 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
     # Wait for threads to finish.
     coord.join(threads)
 
-    # Extract weights of num_classes linear classifiers. Each column corresponds to a classifier.
-    weights_biases_val = sess.run(weights_biases)
+    if line_search:
+        # Initialize validate data and labels in the graph.
+        sess.run([validate_x.initializer, validate_y.initializer], feed_dict={
+            validate_x_initializer: validate_data,
+            validate_y_initializer: validate_labels
+        })
+
+        # Do true search.
+        best_weights_val, best_biases_val = None, None
+        best_l2_reg = 0
+        min_loss = np.PINF
+
+        for l2_reg in l2_regs:
+            weights_val, biases_val, loss_val = sess.run([weights, biases, loss], feed_dict={l2_reg_ph: l2_reg})
+            logging.info('l2_reg {} leads to rmse loss {}.'.format(l2_reg, loss_val))
+            if loss_val < min_loss:
+                best_weights_val, best_biases_val = weights_val, biases_val
+                min_loss = loss_val
+                best_l2_reg = l2_reg
+
+    else:
+        # Extract weights and biases of num_classes linear classifiers. Each column corresponds to a classifier.
+        best_weights_val, best_biases_val = sess.run([weights, biases], feed_dict={l2_reg_ph: l2_regs})
+        best_l2_reg, min_loss = l2_regs, None
 
     sess.close()
 
-    return weights_biases_val
+    logging.info('The best l2_reg is {} with rmse loss {}.'.format(best_l2_reg, min_loss))
+    logging.info('Exiting linear classifier ...')
+
+    return best_weights_val, best_biases_val
 
 
 def initialize_per_label():
@@ -729,19 +847,33 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
     reader = get_reader(model_type, feature_names, feature_sizes)
     train_data_pattern = FLAGS.train_data_pattern
+    validate_data_pattern = FLAGS.validate_data_pattern
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
     # The dir where intermediate results and model checkpoints should be written.
     output_dir = FLAGS.output_dir
-
     # distance metric, cosine or euclidean.
     dist_metric = FLAGS.dist_metric
 
+    # ...Start linear classifier...
+    # Sample validate set for line search in linear classifier.
+    _, validate_data, validate_labels, _ = random_sample(0.01, mask=(False, True, True, False),
+                                                         reader=reader, data_pattern=validate_data_pattern,
+                                                         batch_size=batch_size, num_readers=2)
+
     # Compute weights and biases of linear classifier using normal equation.
-    weights_biases = linear_classifier(reader, train_data_pattern, batch_size=batch_size, num_readers=2)
-    logging.info('linear classifier weights_biases with shape {}'.format(weights_biases.shape))
-    logging.info('linear classifier weights_biases: {}.'.format(weights_biases))
-    """
+    linear_clf_weights, linear_clf_biases = linear_classifier(reader, train_data_pattern,
+                                                              batch_size=batch_size, num_readers=2,
+                                                              l2_regs=[0.001, 0.01, 0.1],
+                                                              validate_set=(validate_data, validate_labels),
+                                                              line_search=True)
+    logging.info('linear classifier weights and biases with shape {}, {}'.format(linear_clf_weights.shape,
+                                                                                 linear_clf_biases.shape))
+    logging.debug('linear classifier weights and {} biases: {}.'.format(linear_clf_weights,
+                                                                        linear_clf_biases))
+    # ...Exit linear classifier...
+
+    # ....Start rbf network...
     # num_centers = FLAGS.num_centers
     # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
     # metric is euclidean or cosine.
@@ -832,7 +964,8 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     # Wait for threads to finish.
     coord.join(threads)
     sess.close()
-    """
+
+    # ....Exit rbf network...
 
 
 def inference(out_file_location, top_k, debug=False):
@@ -873,7 +1006,7 @@ if __name__ == '__main__':
                         'File glob for the training dataset.')
 
     flags.DEFINE_string('validate_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/validate/validateo*.tfrecord',
+                        '/Users/Sophie/Documents/youtube-8m-data/validate/validate*.tfrecord',
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     flags.DEFINE_string('test_data_pattern',
