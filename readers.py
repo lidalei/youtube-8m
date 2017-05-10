@@ -106,7 +106,7 @@ class YT8MAggregatedFeatureReader(BaseReader):
         # serialized_examples is a 1-D string Tensor.
         _, serialized_examples = reader.read_up_to(filename_queue, batch_size)
 
-        tf.add_to_collection("serialized_examples", serialized_examples)
+        # tf.add_to_collection("serialized_examples", serialized_examples)
         return self.prepare_serialized_examples(serialized_examples)
 
     def prepare_serialized_examples(self, serialized_examples):
