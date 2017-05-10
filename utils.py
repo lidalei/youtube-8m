@@ -17,15 +17,16 @@
 
 import numpy
 import tensorflow as tf
-from tensorflow import logging
+from tensorflow import logging, gfile
 import pickle
 from os.path import join as path_join
 
 # Used to locate constants dir.
 from inspect import getsourcefile
 from os.path import abspath
-
 from os.path import dirname
+
+from collections import namedtuple
 
 
 def Dequantize(feat_vector, max_quantized_value=2, min_quantized_value=-2):
@@ -179,6 +180,69 @@ def partial_data_features_mean():
 
     # features_mean = {'mean_rgb': np.array([1024 floats]), 'mean_audio': np.array([128 floats])}
     return features_mean
+
+
+DataPipeline = namedtuple('DataPipeline', ['reader', 'data_pattern', 'batch_size', 'num_readers'])
+
+
+def get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='input'):
+    """
+    Args:
+        data_pipeline: DataPipeline tuple.
+        num_epochs: How many passes can be gone through the data.
+        name_scope: For better visualization and organization.
+    Returns: video_id_batch, video_batch, video_labels_batch, num_frames_batch
+
+    """
+    reader, data_pattern, batch_size, num_readers = data_pipeline
+    return _get_input_data_tensors(reader=reader, data_pattern=data_pattern, batch_size=batch_size,
+                                   num_readers=num_readers, num_epochs=num_epochs, name_scope=name_scope)
+
+
+def _get_input_data_tensors(reader=None, data_pattern=None, batch_size=2048, num_readers=2,
+                            num_epochs=1, name_scope='input'):
+    """Creates the section of the graph which reads the input data.
+
+    Similar to the same-name function in train.py.
+    Args:
+        reader: A class which parses the input data.
+        data_pattern: A 'glob' style path to the data files.
+        batch_size: How many examples to process at a time.
+        num_readers: How many I/O threads to use.
+        num_epochs: How many passed to go through the data files.
+        name_scope: An identifier of this code.
+
+    Returns:
+        A tuple containing the features tensor, labels tensor, and optionally a
+        tensor containing the number of frames per video. The exact dimensions
+        depend on the reader being used.
+
+    Raises:
+        IOError: If no files matching the given pattern were found.
+    """
+    # Adapted from namesake function in inference.py.
+    with tf.name_scope(name_scope):
+        # Glob() can be replace with tf.train.match_filenames_once(), which is an operation.
+        files = gfile.Glob(data_pattern)
+        if not files:
+            raise IOError("Unable to find input files. data_pattern='{}'".format(data_pattern))
+        logging.info("Number of input files: {}".format(len(files)))
+        # Pass test data once. Thus, num_epochs is set as 1.
+        filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=False, capacity=128)
+        examples_and_labels = [reader.prepare_reader(filename_queue) for _ in range(num_readers)]
+
+        # In shuffle_batch_join,
+        # capacity must be larger than min_after_dequeue and the amount larger
+        #   determines the maximum we will prefetch.  Recommendation:
+        #   min_after_dequeue + (num_threads + a small safety margin) * batch_size
+        capacity = num_readers * batch_size + 1024
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+            tf.train.batch_join(examples_and_labels,
+                                batch_size=batch_size,
+                                capacity=capacity,
+                                allow_smaller_final_batch=True,
+                                enqueue_many=True))
+        return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 # if __name__ == '__main__':
 #     features_mean = partial_data_features_mean()
