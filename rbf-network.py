@@ -19,7 +19,7 @@ import tensorflow as tf
 import time
 
 from readers import get_reader
-from utils import partial_data_features_mean
+from utils import get_input_data_tensors, partial_data_features_mean, DataPipeline
 from tensorflow import flags, gfile, logging, app
 
 from os.path import join as path_join
@@ -36,62 +36,16 @@ NUM_VALIDATE_EXAMPLES = None
 NUM_TEST_EXAMPLES = 700640
 
 
-def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_epochs=1, name_scope='input'):
-    """Creates the section of the graph which reads the input data.
-
-    Similar to the same-name function in train.py.
-    Args:
-        reader: A class which parses the input data.
-        data_pattern: A 'glob' style path to the data files.
-        batch_size: How many examples to process at a time.
-        num_readers: How many I/O threads to use.
-        num_epochs: How many passed to go through the data files.
-        name_scope: An identifier of this code.
-
-    Returns:
-        A tuple containing the features tensor, labels tensor, and optionally a
-        tensor containing the number of frames per video. The exact dimensions
-        depend on the reader being used.
-
-    Raises:
-        IOError: If no files matching the given pattern were found.
-    """
-    # Adapted from namesake function in inference.py.
-    with tf.name_scope(name_scope):
-        # Glob() can be replace with tf.train.match_filenames_once(), which is an operation.
-        files = gfile.Glob(data_pattern)
-        if not files:
-            raise IOError("Unable to find input files. data_pattern='{}'".format(data_pattern))
-        logging.info("Number of input files: {}".format(len(files)))
-        # Pass test data once. Thus, num_epochs is set as 1.
-        filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=False, capacity=128)
-        examples_and_labels = [reader.prepare_reader(filename_queue) for _ in range(num_readers)]
-
-        # In shuffle_batch_join,
-        # capacity must be larger than min_after_dequeue and the amount larger
-        #   determines the maximum we will prefetch.  Recommendation:
-        #   min_after_dequeue + (num_threads + a small safety margin) * batch_size
-        capacity = num_readers * batch_size + 1024
-        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            tf.train.batch_join(examples_and_labels,
-                                batch_size=batch_size,
-                                capacity=capacity,
-                                allow_smaller_final_batch=True,
-                                enqueue_many=True))
-        return video_id_batch, video_batch, video_labels_batch, num_frames_batch
-
-
-def random_sample(sample_ratio, mask=(True, True, True, True),
-                  reader=None, data_pattern=None, batch_size=2048, num_readers=2):
+def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=None):
     """
     Randomly sample sample_ratio examples from data that specified reader by and data_pattern.
     Args:
         sample_ratio: The ratio of examples to be sampled. Range (0, 1.0].
         mask: To keep which part or parts of video information, namely, id, features, labels and num of frames.
-        reader: See readers.py.
-        data_pattern: File Glob of data.
-        batch_size: The size of a batch. The last a few batches might have less examples.
-        num_readers: How many IO threads to enqueue example queue.
+        data_pipeline: A namedtuple consisting of the following elements. reader, See readers.py.
+            data_pattern, File Glob of data.
+            batch_size, The size of a batch. The last a few batches might have less examples.
+            num_readers, How many IO threads to enqueue example queue.
     Returns:
         Roughly the ratio of examples will be returned. If a part is not demanded, the corresponding part is None.
     Raises:
@@ -107,8 +61,7 @@ def random_sample(sample_ratio, mask=(True, True, True, True),
     # Create the graph to traverse all data once.
     with tf.Graph().as_default() as graph:
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            get_input_data_tensors(reader=reader, data_pattern=data_pattern, batch_size=batch_size,
-                                   num_readers=num_readers, num_epochs=1, name_scope='rnd_sample'))
+            get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='rnd_sample'))
 
         num_batch_videos = tf.shape(video_batch)[0]
         rnd_nums = tf.random_uniform([num_batch_videos])
@@ -187,15 +140,16 @@ def random_sample(sample_ratio, mask=(True, True, True, True),
     return a_sample
 
 
-def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='cosine', return_mean_clu_dist=False):
+def kmeans_iter(centers, data_pipeline=None, metric='cosine', return_mean_clu_dist=False):
     """
     k-means clustering one iteration.
     Args:
         centers: A list of centers (as a numpy array).
-        reader: Video-level features reader or frame-level features reader.
-        data_pattern: tf data Glob.
-        batch_size: How many examples to read per batch.
-        num_readers: How many IO threads to read examples.
+        data_pipeline: A namedtuple consisting the following elements.
+            reader, Video-level features reader or frame-level features reader.
+            data_pattern, tf data Glob.
+            batch_size, How many examples to read per batch.
+            num_readers, How many IO threads to read examples.
         metric: Distance metric, support euclidean and cosine.
         return_mean_clu_dist: boolean. If True, compute mean distance per cluster. Else, return None.
     Returns:
@@ -237,8 +191,7 @@ def kmeans_iter(centers, reader, data_pattern, batch_size, num_readers, metric='
 
         # Construct data read pipeline.
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            get_input_data_tensors(reader=reader, data_pattern=data_pattern, batch_size=batch_size,
-                                   num_readers=num_readers, num_epochs=1, name_scope='k_means_reader'))
+            get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='k_means_reader'))
 
         # Assign video batch to current centers (clusters).
         if metric == 'euclidean':
@@ -351,8 +304,8 @@ def mini_batch_kmeans():
     pass
 
 
-def initialize(num_centers_ratio, reader, data_pattern, batch_size=2048, num_readers=2,
-               method=None, metric='cosine', max_iter=20, tol=1.0, scaling_method=1, alpha=0.1, p=3):
+def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosine',
+               max_iter=20, tol=1.0, scaling_method=1, alpha=0.1, p=3):
     """
     This functions implements the following two phases:
     1. To initialize representative prototypes (RBF centers) c and scaling factors sigma.
@@ -361,11 +314,12 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=2048, num_rea
     This function will generate one group of centers for all labels as a whole. Be cautious with initialize_per_label.
     Args:
         num_centers_ratio: The number of centers to be decided / total number of examples that belong to label l,
-         for l = 0, ..., num_classes - 1.
-        reader: video-level features reader or frame-level features reader.
-        data_pattern: File Glob of data set.
-        batch_size: How many examples to handle per time.
-        num_readers: How many IO threads to prefetch examples.
+            for l = 0, ..., num_classes - 1.
+        data_pipeline: A namedtuple consisting of the following elements.
+            reader, video-level features reader or frame-level features reader.
+            data_pattern, File Glob of data set.
+            batch_size, How many examples to handle per time.
+            num_readers, How many IO threads to prefetch examples.
         method: The method to decide the centers. Possible choices are random selection, kmeans and online(kmeans).
          Default is None, which represents randomly selecting a certain number of examples as centers.
         metric: Distance metric, euclidean distance or cosine distance.
@@ -392,9 +346,7 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=2048, num_rea
     else:
         raise NotImplementedError('Only euclidean and cosine distance are supported, {} passed.'.format(metric))
 
-    _, centers, _, _ = random_sample(num_centers_ratio, mask=(False, True, False, False),
-                                     reader=reader, data_pattern=data_pattern,
-                                     batch_size=batch_size, num_readers=num_readers)
+    _, centers, _, _ = random_sample(num_centers_ratio, mask=(False, True, False, False), data_pipeline=data_pipeline)
     logging.info('Sampled {} centers totally.'.format(len(centers)))
     logging.debug('Randomly selected centers: {}'.format(centers))
 
@@ -415,8 +367,7 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=2048, num_rea
 
         while iter_count < max_iter:
             start_time = time.time()
-            new_centers, new_obj, per_clu_mean_dist = kmeans_iter(centers, reader, data_pattern,
-                                                                  batch_size, num_readers, metric=metric,
+            new_centers, new_obj, per_clu_mean_dist = kmeans_iter(centers, data_pipeline=data_pipeline, metric=metric,
                                                                   return_mean_clu_dist=return_mean_clu_dist)
             iter_count += 1
             print('The {}-th iteration took {} s.'.format(iter_count, time.time() - start_time))
@@ -466,8 +417,8 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=2048, num_rea
     elif scaling_method == 4:
         # Equation 30.
         if per_clu_mean_dist is None:
-            _, _, per_clu_mean_dist = kmeans_iter(centers, reader, data_pattern,
-                                                  batch_size, num_readers, metric=metric, return_mean_clu_dist=True)
+            _, _, per_clu_mean_dist = kmeans_iter(centers, data_pipeline=data_pipeline, metric=metric,
+                                                  return_mean_clu_dist=True)
             logging.info('Compute mean distance per cluster using kmeans or online kmeans.')
         else:
             logging.info('Reuse results from kmeans or online kmeans.')
@@ -484,7 +435,7 @@ def initialize(num_centers_ratio, reader, data_pattern, batch_size=2048, num_rea
     return centers, sigmas
 
 
-def _compute_data_mean_std(reader, data_pattern, batch_size=1024, num_readers=1, tr_data_fn=None):
+def _compute_data_mean_std(data_pipeline=None, tr_data_fn=None):
     """
     Compute mean and standard deviations per feature (column) and mean of each label.
 
@@ -494,10 +445,11 @@ def _compute_data_mean_std(reader, data_pattern, batch_size=1024, num_readers=1,
         * (https://en.wikipedia.org/wiki/Standard_deviation#Corrected_sample_standard_deviation),
         * which is computed as the square root of the unbiased sample variance.
     Args:
-        reader: video-level or frame-level data reader.
-        data_pattern: train set Glob pattern.
-        batch_size: How many examples to process per time.
-        num_readers: How many threads to (pre-)fetch examples.
+        data_pipeline: A namedtuple consisting of the following elements.
+            reader, video-level features reader or frame-level features reader.
+            data_pattern, File Glob of data set.
+            batch_size, How many examples to handle per time.
+            num_readers, How many IO threads to prefetch examples.
         tr_data_fn: a function that transforms input data.
 
     Returns:
@@ -505,6 +457,7 @@ def _compute_data_mean_std(reader, data_pattern, batch_size=1024, num_readers=1,
         Standard deviations of each feature column as a numpy array of rank 1.
         Mean values of each label as a numpy array of rank 1.
     """
+    reader = data_pipeline.reader
     feature_names = reader.feature_names
     feature_sizes = reader.feature_sizes
     # Total number of features.
@@ -532,8 +485,7 @@ def _compute_data_mean_std(reader, data_pattern, batch_size=1024, num_readers=1,
     # Create the graph to traverse all data once.
     with tf.Graph().as_default() as graph:
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            get_input_data_tensors(reader=reader, data_pattern=data_pattern, batch_size=batch_size,
-                                   num_readers=num_readers, num_epochs=1, name_scope='features_mean_std'))
+            get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='features_mean_std'))
 
         video_count = tf.Variable(initial_value=0.0, name='video_count')
         features_sum = tf.Variable(initial_value=tf.zeros([features_size]), name='features_sum')
@@ -606,15 +558,16 @@ def _compute_data_mean_std(reader, data_pattern, batch_size=1024, num_readers=1,
     return features_mean_val, features_std_val, labels_mean_val
 
 
-def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1, tr_data_fn=None, l2_regs=None,
+def linear_classifier(data_pipeline=None, tr_data_fn=None, l2_regs=None,
                       validate_set=None, line_search=True):
     """
     Compute weights and biases of linear classifier using normal equation. With line search for best l2_reg.
     Args:
-        reader: video-level or frame-level data reader.
-        train_data_pattern: train set Glob pattern.
-        batch_size: How many examples to process per time.
-        num_readers: How many threads to (pre-)fetch examples.
+        data_pipeline: A namedtuple consisting of the following elements.
+            reader, video-level features reader or frame-level features reader.
+            data_pattern, File Glob of data set.
+            batch_size, How many examples to handle per time.
+            num_readers, How many IO threads to prefetch examples.
         tr_data_fn: a function that transforms input data.
         l2_regs: An array, each element represents how much the linear classifier weights should be penalized.
         validate_set: (data, labels) with dtype float32. The data set (numpy arrays) used to choose the best l2_reg.
@@ -627,6 +580,7 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
     logging.info('Entering linear classifier ...')
     output_dir = FLAGS.output_dir
 
+    reader = data_pipeline.reader
     num_classes = reader.num_classes
     feature_names = reader.feature_names
     feature_sizes = reader.feature_sizes
@@ -677,8 +631,7 @@ def linear_classifier(reader, train_data_pattern, batch_size=1024, num_readers=1
         labels_sum = tf.Variable(initial_value=tf.zeros([num_classes]), name='labels_sum')
 
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            get_input_data_tensors(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
-                                   num_readers=num_readers, num_epochs=1, name_scope='input'))
+            get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='input'))
         if tr_data_fn is None:
             video_batch_transformed = tf.identity(video_batch)
         else:
@@ -829,60 +782,23 @@ def build_graph():
     pass
 
 
-def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=False):
-    """
-    Training.
-
-    Args:
-        init_learning_rate: Initial learning rate.
-        decay_steps: How many training steps to decay learning rate once.
-        decay_rate: How much to decay learning rate.
-        epochs: The maximal epochs to pass all training data.
-        debug: boolean, True to print detailed debug information, False, silent.
-
-    Returns:
-
-    """
-    num_centers_ratio = FLAGS.num_centers_ratio
-    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
-    reader = get_reader(model_type, feature_names, feature_sizes)
-    train_data_pattern = FLAGS.train_data_pattern
-    validate_data_pattern = FLAGS.validate_data_pattern
-    batch_size = FLAGS.batch_size
-    num_readers = FLAGS.num_readers
-    # The dir where intermediate results and model checkpoints should be written.
-    output_dir = FLAGS.output_dir
+def rbf(num_centers_ratio, data_pipeline, init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
+        epochs=None, debug=False):
     # distance metric, cosine or euclidean.
     dist_metric = FLAGS.dist_metric
-
-    # ...Start linear classifier...
-    # Sample validate set for line search in linear classifier.
-    _, validate_data, validate_labels, _ = random_sample(0.01, mask=(False, True, True, False),
-                                                         reader=reader, data_pattern=validate_data_pattern,
-                                                         batch_size=batch_size, num_readers=2)
-
-    # Compute weights and biases of linear classifier using normal equation.
-    linear_clf_weights, linear_clf_biases = linear_classifier(reader, train_data_pattern,
-                                                              batch_size=batch_size, num_readers=2,
-                                                              l2_regs=[0.001, 0.01, 0.1],
-                                                              validate_set=(validate_data, validate_labels),
-                                                              line_search=True)
-    logging.info('linear classifier weights and biases with shape {}, {}'.format(linear_clf_weights.shape,
-                                                                                 linear_clf_biases.shape))
-    logging.debug('linear classifier weights and {} biases: {}.'.format(linear_clf_weights,
-                                                                        linear_clf_biases))
-    # ...Exit linear classifier...
 
     # ....Start rbf network...
     # num_centers = FLAGS.num_centers
     # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
     # metric is euclidean or cosine.
-    centers, sigmas = initialize(num_centers_ratio, reader, train_data_pattern, batch_size, num_readers,
+    centers, sigmas = initialize(num_centers_ratio, data_pipeline=data_pipeline,
                                  method='kmeans', metric=dist_metric, scaling_method=4)
     """
     """
     num_centers = centers.shape[0]
 
+    reader = data_pipeline.reader
+    batch_size = data_pipeline.batch_size
     num_classes = reader.num_classes
 
     # Build logistic regression graph and optimize it.
@@ -899,8 +815,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
         neg_basis_f_deno = tf.Variable(initial_value=expanded_neg_two_times_sq_sigmas, dtype=tf.float32)
 
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            get_input_data_tensors(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
-                                   num_readers=num_readers, num_epochs=epochs, name_scope='lr_weights'))
+            get_input_data_tensors(data_pipeline, num_epochs=epochs, name_scope='lr_weights'))
 
         if dist_metric == 'cosine':
             normalized_video_batch = tf.nn.l2_normalize(video_batch, -1)
@@ -964,8 +879,52 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     # Wait for threads to finish.
     coord.join(threads)
     sess.close()
-
     # ....Exit rbf network...
+
+
+def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=False):
+    """
+    Training.
+
+    Args:
+        init_learning_rate: Initial learning rate.
+        decay_steps: How many training steps to decay learning rate once.
+        decay_rate: How much to decay learning rate.
+        epochs: The maximal epochs to pass all training data.
+        debug: boolean, True to print detailed debug information, False, silent.
+
+    Returns:
+
+    """
+    num_centers_ratio = FLAGS.num_centers_ratio
+    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
+    reader = get_reader(model_type, feature_names, feature_sizes)
+    train_data_pattern = FLAGS.train_data_pattern
+    validate_data_pattern = FLAGS.validate_data_pattern
+    batch_size = FLAGS.batch_size
+    num_readers = FLAGS.num_readers
+    # The dir where intermediate results and model checkpoints should be written.
+    output_dir = FLAGS.output_dir
+
+    # ...Start linear classifier...
+    # Sample validate set for line search in linear classifier.
+    validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
+                                          batch_size=batch_size, num_readers=2)
+    _, validate_data, validate_labels, _ = random_sample(0.01, mask=(False, True, True, False),
+                                                         data_pipeline=validate_data_pipeline)
+
+    # Compute weights and biases of linear classifier using normal equation.
+    train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
+                                       batch_size=batch_size, num_readers=2)
+    linear_clf_weights, linear_clf_biases = linear_classifier(data_pipeline=train_data_pipeline,
+                                                              l2_regs=[0.001, 0.01, 0.1],
+                                                              validate_set=(validate_data, validate_labels),
+                                                              line_search=True)
+    logging.info('linear classifier weights and biases with shape {}, {}'.format(linear_clf_weights.shape,
+                                                                                 linear_clf_biases.shape))
+    logging.debug('linear classifier weights and {} biases: {}.'.format(linear_clf_weights,
+                                                                        linear_clf_biases))
+    # ...Exit linear classifier...
 
 
 def inference(out_file_location, top_k, debug=False):
