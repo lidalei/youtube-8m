@@ -185,10 +185,11 @@ def partial_data_features_mean():
 DataPipeline = namedtuple('DataPipeline', ['reader', 'data_pattern', 'batch_size', 'num_readers'])
 
 
-def get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='input'):
+def get_input_data_tensors(data_pipeline, shuffle=False, num_epochs=1, name_scope='input'):
     """
     Args:
         data_pipeline: DataPipeline tuple.
+        shuffle: Boolean argument indicating whether shuffle examples.
         num_epochs: How many passes can be gone through the data.
         name_scope: For better visualization and organization.
     Returns: video_id_batch, video_batch, video_labels_batch, num_frames_batch
@@ -196,10 +197,11 @@ def get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='input'):
     """
     reader, data_pattern, batch_size, num_readers = data_pipeline
     return _get_input_data_tensors(reader=reader, data_pattern=data_pattern, batch_size=batch_size,
-                                   num_readers=num_readers, num_epochs=num_epochs, name_scope=name_scope)
+                                   num_readers=num_readers, shuffle=shuffle, num_epochs=num_epochs,
+                                   name_scope=name_scope)
 
 
-def _get_input_data_tensors(reader=None, data_pattern=None, batch_size=2048, num_readers=2,
+def _get_input_data_tensors(reader=None, data_pattern=None, batch_size=2048, num_readers=2, shuffle=False,
                             num_epochs=1, name_scope='input'):
     """Creates the section of the graph which reads the input data.
 
@@ -209,6 +211,7 @@ def _get_input_data_tensors(reader=None, data_pattern=None, batch_size=2048, num
         data_pattern: A 'glob' style path to the data files.
         batch_size: How many examples to process at a time.
         num_readers: How many I/O threads to use.
+        shuffle: Boolean argument indicating whether shuffle examples.
         num_epochs: How many passed to go through the data files.
         name_scope: An identifier of this code.
 
@@ -228,20 +231,31 @@ def _get_input_data_tensors(reader=None, data_pattern=None, batch_size=2048, num
             raise IOError("Unable to find input files. data_pattern='{}'".format(data_pattern))
         logging.info("Number of input files: {}".format(len(files)))
         # Pass test data once. Thus, num_epochs is set as 1.
-        filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=False, capacity=128)
+        filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=shuffle, capacity=128)
         examples_and_labels = [reader.prepare_reader(filename_queue) for _ in range(num_readers)]
 
         # In shuffle_batch_join,
         # capacity must be larger than min_after_dequeue and the amount larger
         #   determines the maximum we will prefetch.  Recommendation:
         #   min_after_dequeue + (num_threads + a small safety margin) * batch_size
-        capacity = num_readers * batch_size + 1024
-        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            tf.train.batch_join(examples_and_labels,
-                                batch_size=batch_size,
-                                capacity=capacity,
-                                allow_smaller_final_batch=True,
-                                enqueue_many=True))
+        if shuffle:
+            capacity = (num_readers + 1) * batch_size + 2048
+            video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+                tf.train.shuffle_batch_join(examples_and_labels,
+                                            batch_size=batch_size,
+                                            capacity=capacity,
+                                            min_after_dequeue=batch_size,
+                                            allow_smaller_final_batch=True,
+                                            enqueue_many=True))
+        else:
+            capacity = num_readers * batch_size + 2048
+            video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+                tf.train.batch_join(examples_and_labels,
+                                    batch_size=batch_size,
+                                    capacity=capacity,
+                                    allow_smaller_final_batch=True,
+                                    enqueue_many=True))
+
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 # if __name__ == '__main__':
