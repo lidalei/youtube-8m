@@ -474,7 +474,7 @@ class Trainer(object):
 
         logging.info("{}: Exited training loop.".format(task_str))
         # Stop supervisor.
-        sv.Stop()
+        sv.stop()
 
     def export_model(self, global_step_val, saver, save_path, session):
 
