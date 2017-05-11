@@ -640,11 +640,13 @@ def linear_classifier(data_pipeline=None, tr_data_fn=None, l2_regs=None,
         with tf.name_scope('batch_increment'):
             video_batch_transformed_tr = tf.matrix_transpose(video_batch_transformed, name='X_Tr')
             video_labels_batch_cast = tf.cast(video_labels_batch, tf.float32)
-            batch_norm_equ_1 = tf.matmul(video_batch_transformed_tr, video_batch_transformed)
+            batch_norm_equ_1 = tf.matmul(video_batch_transformed_tr, video_batch_transformed,
+                                         name='batch_norm_equ_1')
             # batch_norm_equ_1 = tf.add_n(tf.map_fn(lambda x: tf.einsum('i,j->ij', x, x),
             #                                       video_batch_transformed), name='X_Tr_X')
-            batch_norm_equ_2 = tf.matmul(video_batch_transformed_tr, video_labels_batch_cast)
-            batch_video_count = tf.cast(tf.shape(video_batch)[0], tf.float32)
+            batch_norm_equ_2 = tf.matmul(video_batch_transformed_tr, video_labels_batch_cast,
+                                         name='batch_norm_equ_2')
+            batch_video_count = tf.cast(tf.shape(video_batch)[0], tf.float32, name='batch_video_count')
             batch_features_sum = tf.reduce_sum(video_batch, axis=0, name='batch_features_sum')
             batch_labels_sum = tf.reduce_sum(video_labels_batch_cast, axis=0, name='batch_labels_sum')
 
@@ -690,7 +692,7 @@ def linear_classifier(data_pipeline=None, tr_data_fn=None, l2_regs=None,
                                      name='validate_labels')
 
             predictions = tf.matmul(validate_x, weights) + biases
-            loss = tf.sqrt(tf.reduce_mean(tf.square(tf.subtract(predictions, validate_y))), name='rmse')
+            loss = tf.sqrt(tf.reduce_mean(tf.squared_difference(predictions, validate_y)), name='rmse')
             # pred_labels = tf.greater_equal(predictions, 0.0, name='pred_labels')
 
         summary_op = tf.summary.merge_all()
@@ -837,9 +839,9 @@ def rbf(num_centers_ratio, data_pipeline, init_learning_rate=0.01, decay_steps=4
         # Define num_classes logistic regression models parameters. num_centers is new feature dimension.
         weights = tf.Variable(initial_value=tf.truncated_normal([num_centers, num_classes]),
                               dtype=tf.float32, name='weights')
-        basis = tf.Variable(initial_value=tf.zeros([num_classes]))
+        biases = tf.Variable(initial_value=tf.zeros([num_classes]))
 
-        lr_output = tf.matmul(rbf_fs, weights) + basis
+        lr_output = tf.matmul(rbf_fs, weights) + biases
         lr_pred_prob = tf.nn.sigmoid(lr_output, name='lr_pred_probability')
         loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.cast(video_labels_batch, tf.float32),
                                                        logits=lr_output, name='loss')
@@ -882,6 +884,160 @@ def rbf(num_centers_ratio, data_pipeline, init_learning_rate=0.01, decay_steps=4
     # ....Exit rbf network...
 
 
+def log_reg_fit(train_data_pipeline, validate_set=None,
+                init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
+                epochs=None, l2_reg_rate=0.01, initial_weights=None, initial_biases=None):
+    """
+    Logistic regression.
+    Args:
+        train_data_pipeline: A namedtuple consisting of reader, data_pattern, batch_size and num_readers.
+        validate_set: If not None, check validation loss regularly. Else, ignored.
+        init_learning_rate: Decayed gradient descent parameter.
+        decay_steps: Decayed gradient descent parameter.
+        decay_rate: Decayed gradient descent parameter.
+        epochs: Maximal epochs to use.
+        l2_reg_rate: l2 regularizer rate.
+        initial_weights: If not None, the weights will be initialized with it.
+        initial_biases: If not None, the biases will be initialized with it.
+    Returns:
+
+    """
+    output_dir = FLAGS.output_dir
+    # The dir where intermediate results and model checkpoints should be written.
+    log_dir = path_join(output_dir, 'log_reg')
+
+    reader = train_data_pipeline.reader
+    batch_size = train_data_pipeline.batch_size
+    num_classes = reader.num_classes
+    feature_names = reader.feature_names
+    feature_sizes = reader.feature_sizes
+    feature_size = sum(feature_sizes)
+    logging.info('Logistic regression uses {} features with dims {}.'.format(feature_names, feature_sizes))
+
+    # Sample validate set.
+    if validate_set is not None:
+        validate_data, validate_labels = validate_set
+    else:
+        validate_data = np.zeros([1, feature_size], np.float32)
+        validate_labels = np.zeros([1, num_classes], np.float32)
+
+    # Build logistic regression graph and optimize it.
+    graph = tf.Graph()
+    with graph.as_default():
+        global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
+
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+            get_input_data_tensors(train_data_pipeline, shuffle=True, num_epochs=epochs, name_scope='train_input'))
+
+        # Define num_classes logistic regression models parameters.
+        if initial_weights is None:
+            weights = tf.Variable(initial_value=tf.truncated_normal([feature_size, num_classes]),
+                                  dtype=tf.float32, name='weights')
+        else:
+            weights = tf.Variable(initial_value=initial_weights, dtype=tf.float32, name='weights')
+
+        tf.summary.histogram('log_reg_weights', weights)
+
+        if initial_biases is None:
+            biases = tf.Variable(initial_value=tf.zeros([num_classes]), name='biases')
+        else:
+            biases = tf.Variable(initial_value=initial_biases, name='biases')
+
+        tf.summary.histogram('log_reg_biases', biases)
+
+        output = tf.add(tf.matmul(video_batch, weights), biases, name='output')
+        float_labels = tf.cast(video_labels_batch, tf.float32, name='float_labels')
+        pred_prob = tf.nn.sigmoid(output, name='pred_probability')
+
+        with tf.name_scope('train_loss'):
+            loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
+                labels=float_labels, logits=output, name='x_entropy_per_ex_label')
+
+            loss_per_label = tf.reduce_mean(loss_per_ex_label, axis=0, name='x_entropy_per_label')
+            #  mean cross entropy over batch.
+            loss = tf.reduce_sum(loss_per_label, name='x_entropy')
+            # Add regularizer.
+            weights_l2_loss_per_label = tf.reduce_sum(tf.square(weights), axis=0, name='weights_l2_loss_per_label')
+            weights_l2_loss = tf.reduce_sum(weights_l2_loss_per_label, name='weights_l2_loss')
+
+            final_loss = tf.add(loss, tf.multiply(l2_reg_rate, weights_l2_loss))
+
+            tf.summary.histogram('weights_l2_loss_per_label', weights_l2_loss_per_label)
+            tf.summary.scalar('weights_l2_loss', weights_l2_loss)
+            tf.summary.histogram('xentropy_per_label', loss_per_label)
+            tf.summary.scalar('xentropy', loss)
+
+        with tf.name_scope('optimization'):
+            # Decayed learning rate.
+            rough_num_examples_processed = tf.multiply(global_step, batch_size)
+            adap_learning_rate = tf.train.exponential_decay(init_learning_rate, rough_num_examples_processed,
+                                                            decay_steps, decay_rate, name='adap_learning_rate')
+            optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
+            train_op = optimizer.minimize(final_loss, global_step=global_step)
+
+            tf.summary.scalar('learning_rate', adap_learning_rate)
+
+        with tf.name_scope('validate'):
+            validate_data_initializer = tf.placeholder(tf.float32, shape=validate_data.shape)
+            validate_labels_initializer = tf.placeholder(tf.bool, shape=validate_labels.shape)
+            validate_data_var = tf.Variable(initial_value=validate_data_initializer, trainable=False,
+                                            collections=[], name='data')
+            validate_labels_var = tf.Variable(initial_value=validate_labels_initializer, trainable=False,
+                                              collections=[], name='labels')
+            with tf.control_dependencies([validate_data_var.initializer, validate_labels_var.initializer]):
+                set_validate_non_op = tf.no_op('set_validate_set')
+
+            float_validate_labels = tf.cast(validate_labels_var, tf.float32, name='float_labels')
+
+            validate_pred = tf.matmul(validate_data_var, weights) + biases
+            validate_loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
+                labels=float_validate_labels,logits=validate_pred, name='xentropy_per_ex_label')
+
+            validate_loss_per_label = tf.reduce_mean(validate_loss_per_ex_label, axis=0,
+                                                     name='xentropy_per_label')
+
+            validate_loss = tf.reduce_sum(validate_loss_per_label, name='x_entropy')
+
+            tf.summary.histogram('xentropy_per_label', validate_loss_per_label)
+            tf.summary.scalar('xentropy', validate_loss)
+
+        tf.add_to_collection('predictions', pred_prob)
+
+        summary_op = tf.summary.merge_all()
+
+        # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    # Save trainable variables only.
+    saver = tf.train.Saver(var_list=graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) + [global_step],
+                           max_to_keep=20, keep_checkpoint_every_n_hours=0.25)
+    # To avoid summary causing memory usage peak, manually save summaries.
+    sv = tf.train.Supervisor(graph=graph, init_op=init_op, logdir=log_dir, global_step=global_step, summary_op=None,
+                             save_model_secs=900, saver=saver)
+
+    with sv.managed_session() as sess:
+        logging.info("Entering training loop...")
+        # Set validate set.
+        sess.run(set_validate_non_op, feed_dict={validate_data_initializer: validate_data,
+                                                 validate_labels_initializer: validate_labels})
+        logging.info('Set validate set in the graph for future use.')
+        for step in xrange(1, 1000):
+            if sv.should_stop():
+                break
+
+            if step % 100 == 0:
+                _, summary, validate_loss_val = sess.run([train_op, summary_op, validate_loss])
+                # global_step will be found automatically.
+                sv.summary_computed(sess, summary)
+            else:
+                sess.run(train_op)
+
+    logging.info("Exited training loop.")
+    # Session will close automatically when with clause exits.
+    # sess.close()
+    sv.stop()
+
+
 def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=False):
     """
     Training.
@@ -903,28 +1059,37 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
     validate_data_pattern = FLAGS.validate_data_pattern
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
-    # The dir where intermediate results and model checkpoints should be written.
-    output_dir = FLAGS.output_dir
+    init_with_linear_clf = FLAGS.init_with_linear_clf
 
-    # ...Start linear classifier...
-    # Sample validate set for line search in linear classifier.
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
-                                          batch_size=batch_size, num_readers=2)
-    _, validate_data, validate_labels, _ = random_sample(0.01, mask=(False, True, True, False),
+                                          batch_size=batch_size, num_readers=num_readers)
+    # ...Start linear classifier...
+    # Sample validate set for line search in linear classifier or logistic regression early stopping.
+    _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
                                                          data_pipeline=validate_data_pipeline)
-
-    # Compute weights and biases of linear classifier using normal equation.
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
-                                       batch_size=batch_size, num_readers=2)
-    linear_clf_weights, linear_clf_biases = linear_classifier(data_pipeline=train_data_pipeline,
-                                                              l2_regs=[0.001, 0.01, 0.1],
-                                                              validate_set=(validate_data, validate_labels),
-                                                              line_search=True)
-    logging.info('linear classifier weights and biases with shape {}, {}'.format(linear_clf_weights.shape,
-                                                                                 linear_clf_biases.shape))
-    logging.debug('linear classifier weights and {} biases: {}.'.format(linear_clf_weights,
-                                                                        linear_clf_biases))
-    # ...Exit linear classifier...
+                                       batch_size=batch_size, num_readers=num_readers)
+
+    if init_with_linear_clf:
+        # Compute weights and biases of linear classifier using normal equation.
+        linear_clf_weights, linear_clf_biases = linear_classifier(data_pipeline=train_data_pipeline,
+                                                                  l2_regs=[0.001, 0.01, 0.1, 0.5],
+                                                                  validate_set=(validate_data, validate_labels),
+                                                                  line_search=True)
+        logging.info('linear classifier weights and biases with shape {}, {}'.format(linear_clf_weights.shape,
+                                                                                     linear_clf_biases.shape))
+        logging.debug('linear classifier weights and {} biases: {}.'.format(linear_clf_weights,
+                                                                            linear_clf_biases))
+        # ...Exit linear classifier...
+
+        log_reg_fit(train_data_pipeline, validate_set=(validate_data, validate_labels),
+                    init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
+                    epochs=epochs, l2_reg_rate=0.01, initial_weights=linear_clf_weights,
+                    initial_biases=linear_clf_biases)
+    else:
+        log_reg_fit(train_data_pipeline, validate_set=(validate_data, validate_labels),
+                    init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
+                    epochs=epochs, l2_reg_rate=0.01, initial_weights=None, initial_biases=None)
 
 
 def inference(out_file_location, top_k, debug=False):
@@ -961,7 +1126,7 @@ if __name__ == '__main__':
 
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord',
+                        '/Users/Sophie/Documents/youtube-8m-data/train/train*.tfrecord',
                         'File glob for the training dataset.')
 
     flags.DEFINE_string('validate_data_pattern',
@@ -988,6 +1153,9 @@ if __name__ == '__main__':
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
 
+    flags.DEFINE_boolean('init_with_linear_clf', False,
+                         'Boolean variable indicating whether to init logistic regression with linear classifier.')
+
     flags.DEFINE_float('init_learning_rate', 0.01, 'Float variable to indicate initial learning rate.')
 
     flags.DEFINE_integer('decay_steps', NUM_TRAIN_EXAMPLES,
@@ -1001,13 +1169,13 @@ if __name__ == '__main__':
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
     # Added current timestamp.
-    flags.DEFINE_string('output_dir', '/tmp/ml-knn-{}'.format(int(time.time())),
+    flags.DEFINE_string('output_dir', '/tmp/rbf-network',
                         'The directory where intermediate and model checkpoints should be written.')
 
     # TODO, change it.
     flags.DEFINE_boolean('is_debug', True, 'Boolean variable to indicate debug or not.')
 
-    flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
+    flags.DEFINE_string('output_file', '/tmp/rbf-network/predictions.csv', 'The file to save the predictions to.')
 
     flags.DEFINE_integer('top_k', 20, 'How many predictions to output per video.')
 
