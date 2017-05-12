@@ -22,7 +22,7 @@ from readers import get_reader
 from utils import get_input_data_tensors, partial_data_features_mean, DataPipeline
 from tensorflow import flags, gfile, logging, app
 
-from os.path import join as path_join
+from os.path import join as path_join, dirname
 import pickle
 import numpy as np
 import scipy.spatial.distance as sci_distance
@@ -34,6 +34,8 @@ NUM_TRAIN_EXAMPLES = 4906660
 # TODO
 NUM_VALIDATE_EXAMPLES = None
 NUM_TEST_EXAMPLES = 700640
+
+MAX_TRAIN_STEPS = 1000000
 
 
 def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=None):
@@ -899,8 +901,7 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
         l2_reg_rate: l2 regularizer rate.
         initial_weights: If not None, the weights will be initialized with it.
         initial_biases: If not None, the biases will be initialized with it.
-    Returns:
-
+    Returns: None.
     """
     output_dir = FLAGS.output_dir
     # The dir where intermediate results and model checkpoints should be written.
@@ -971,7 +972,8 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
             # Decayed learning rate.
             rough_num_examples_processed = tf.multiply(global_step, batch_size)
             adap_learning_rate = tf.train.exponential_decay(init_learning_rate, rough_num_examples_processed,
-                                                            decay_steps, decay_rate, name='adap_learning_rate')
+                                                            decay_steps, decay_rate, staircase=True,
+                                                            name='adap_learning_rate')
             optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
             train_op = optimizer.minimize(final_loss, global_step=global_step)
 
@@ -1001,6 +1003,8 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
             tf.summary.histogram('xentropy_per_label', validate_loss_per_label)
             tf.summary.scalar('xentropy', validate_loss)
 
+        # Add to collection. In inference, get collection and feed it with test data.
+        tf.add_to_collection('video_input_batch', video_batch)
         tf.add_to_collection('predictions', pred_prob)
 
         summary_op = tf.summary.merge_all()
@@ -1009,8 +1013,7 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
     # Save trainable variables only.
-    saver = tf.train.Saver(var_list=graph.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES) + [global_step],
-                           max_to_keep=20, keep_checkpoint_every_n_hours=0.25)
+    saver = tf.train.Saver(var_list=[weights, biases, global_step], max_to_keep=20, keep_checkpoint_every_n_hours=0.25)
     # To avoid summary causing memory usage peak, manually save summaries.
     sv = tf.train.Supervisor(graph=graph, init_op=init_op, logdir=log_dir, global_step=global_step, summary_op=None,
                              save_model_secs=900, saver=saver)
@@ -1021,14 +1024,17 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
         sess.run(set_validate_non_op, feed_dict={validate_data_initializer: validate_data,
                                                  validate_labels_initializer: validate_labels})
         logging.info('Set validate set in the graph for future use.')
-        for step in xrange(1, 1000):
+        for step in xrange(1, MAX_TRAIN_STEPS):
             if sv.should_stop():
+                # Save the final model and break.
+                saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
                 break
 
             if step % 100 == 0:
-                _, summary, validate_loss_val = sess.run([train_op, summary_op, validate_loss])
+                _, summary, validate_loss_val, global_step_val = sess.run(
+                    [train_op, summary_op, validate_loss, global_step])
                 # global_step will be found automatically.
-                sv.summary_computed(sess, summary)
+                sv.summary_computed(sess, summary, global_step=global_step_val)
             else:
                 sess.run(train_op)
 
@@ -1092,8 +1098,29 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
                     epochs=epochs, l2_reg_rate=0.01, initial_weights=None, initial_biases=None)
 
 
-def inference(out_file_location, top_k, debug=False):
-    pass
+def inference(train_model_dir):
+    out_file_location = FLAGS.output_file
+    top_k = FLAGS.top_k
+    test_data_pattern = FLAGS.test_data_pattern
+    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
+    reader = get_reader(model_type, feature_names, feature_sizes)
+    batch_size = FLAGS.batch_size
+    num_readers = FLAGS.num_readers
+
+    log_dir = path_join(dirname(out_file_location), 'logs')
+
+    test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern,
+                                      batch_size=batch_size, num_readers=num_readers)
+
+    graph = tf.Graph()
+    with graph.as_default():
+        global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
+        global_step_inc_op = tf.assign_add(global_step, 1)
+
+        video_id_batch, video_batch, labels_batch, num_frames_batch = (
+            get_input_data_tensors(test_data_pipeline, shuffle=False, num_epochs=1, name_scope='test_input'))
+
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
 
 def main(unused_argv):
@@ -1105,10 +1132,10 @@ def main(unused_argv):
     train_epochs = FLAGS.train_epochs
     is_tuning_hyper_para = FLAGS.is_tuning_hyper_para
 
-    is_debug = FLAGS.is_debug
+    # Where training checkpoints are stored.
+    train_model_dir = FLAGS.train_model_dir
 
-    output_file = FLAGS.output_file
-    top_k = FLAGS.top_k
+    is_debug = FLAGS.is_debug
 
     logging.set_verbosity(logging.INFO)
 
@@ -1118,7 +1145,7 @@ def main(unused_argv):
         else:
             train(init_learning_rate, decay_steps, decay_rate, epochs=train_epochs, debug=is_debug)
     else:
-        inference(output_file, top_k)
+        inference(train_model_dir)
 
 
 if __name__ == '__main__':
@@ -1171,6 +1198,9 @@ if __name__ == '__main__':
     # Added current timestamp.
     flags.DEFINE_string('output_dir', '/tmp/rbf-network',
                         'The directory where intermediate and model checkpoints should be written.')
+
+    flags.DEFINE_string('train_model_dir', '/tmp/rbf-network/log_reg',
+                        'The directory ')
 
     # TODO, change it.
     flags.DEFINE_boolean('is_debug', True, 'Boolean variable to indicate debug or not.')
