@@ -1013,10 +1013,10 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
     # Save trainable variables only.
-    saver = tf.train.Saver(var_list=[weights, biases, global_step], max_to_keep=20, keep_checkpoint_every_n_hours=0.25)
+    saver = tf.train.Saver(var_list=[weights, biases, global_step], max_to_keep=20, keep_checkpoint_every_n_hours=0.2)
     # To avoid summary causing memory usage peak, manually save summaries.
     sv = tf.train.Supervisor(graph=graph, init_op=init_op, logdir=log_dir, global_step=global_step, summary_op=None,
-                             save_model_secs=900, saver=saver)
+                             save_model_secs=600, saver=saver)
 
     with sv.managed_session() as sess:
         logging.info("Entering training loop...")
@@ -1070,7 +1070,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None):
                                           batch_size=batch_size, num_readers=num_readers)
     # ...Start linear classifier...
     # Sample validate set for line search in linear classifier or logistic regression early stopping.
-    _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
+    _, validate_data, validate_labels, _ = random_sample(0.1, mask=(False, True, True, False),
                                                          data_pipeline=validate_data_pipeline)
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
                                        batch_size=batch_size, num_readers=num_readers)
