@@ -787,7 +787,7 @@ def build_graph():
 
 
 def rbf(num_centers_ratio, data_pipeline, init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
-        epochs=None, debug=False):
+        epochs=None):
     # distance metric, cosine or euclidean.
     dist_metric = FLAGS.dist_metric
 
@@ -1044,7 +1044,7 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
     sv.stop()
 
 
-def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=False):
+def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None):
     """
     Training.
 
@@ -1053,7 +1053,6 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None, debug=F
         decay_steps: How many training steps to decay learning rate once.
         decay_rate: How much to decay learning rate.
         epochs: The maximal epochs to pass all training data.
-        debug: boolean, True to print detailed debug information, False, silent.
 
     Returns:
 
@@ -1107,20 +1106,78 @@ def inference(train_model_dir):
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
 
-    log_dir = path_join(dirname(out_file_location), 'logs')
+    # Load pre-trained graph and corresponding variables.
+    sess = tf.Session()
+    latest_checkpoint = tf.train.latest_checkpoint(train_model_dir)
+    if latest_checkpoint is None:
+        raise Exception("unable to find a checkpoint at location: {}".format(train_model_dir))
+    else:
+        meta_graph_location = '{}{}'.format(latest_checkpoint, ".meta")
+        logging.info("loading meta-graph: {}".format(meta_graph_location))
+    pre_trained_saver = tf.train.import_meta_graph(meta_graph_location, clear_devices=True)
+    logging.info("restoring variables from {}".format(latest_checkpoint))
+    pre_trained_saver.restore(sess, latest_checkpoint)
+    # Get collections to be used in making predictions for test data.
+    video_input_batch = tf.get_collection('video_input_batch')[0]
+    pred_prob = tf.get_collection('predictions')[0]
 
+    # Get test data.
     test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern,
                                       batch_size=batch_size, num_readers=num_readers)
 
-    graph = tf.Graph()
-    with graph.as_default():
-        global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
-        global_step_inc_op = tf.assign_add(global_step, 1)
-
+    test_graph = tf.Graph()
+    with test_graph.as_default():
         video_id_batch, video_batch, labels_batch, num_frames_batch = (
             get_input_data_tensors(test_data_pipeline, shuffle=False, num_epochs=1, name_scope='test_input'))
 
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    # Run test graph to get video batch and feed video batch to pre_trained_graph to get predictions.
+    test_sess = tf.Session(graph=test_graph)
+    with gfile.Open(out_file_location, "w+") as out_file:
+        test_sess.run(init_op)
+
+        # Be cautious to not be blocked by queue.
+        # Start input enqueue threads.
+        coord = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess=test_sess, coord=coord)
+
+        processing_count, num_examples_processed = 0, 0
+        out_file.write("VideoId,LabelConfidencePairs\n")
+
+        try:
+
+            while not coord.should_stop():
+                # Run training steps or whatever.
+                start_time = time.time()
+                video_id_batch_val, video_batch_val = test_sess.run([video_id_batch, video_batch])
+                logging.debug('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
+
+                batch_predictions_prob = sess.run(pred_prob, feed_dict={video_input_batch: video_batch_val})
+
+                # Write batch predictions to files.
+                for line in format_lines(video_id_batch_val, batch_predictions_prob, top_k):
+                    out_file.write(line)
+                out_file.flush()
+
+                now = time.time()
+                processing_count += 1
+                num_examples_processed += video_id_batch_val.shape[0]
+                print('Batch processing step: {}, elapsed seconds: {}, total number of examples processed: {}'.format(
+                    processing_count, now - start_time, num_examples_processed))
+
+        except tf.errors.OutOfRangeError:
+            logging.info('Done with inference. The predictions were written to {}'.format(out_file_location))
+        finally:
+            # When done, ask the threads to stop.
+            coord.request_stop()
+
+        # Wait for threads to finish.
+        coord.join(threads)
+
+        test_sess.close()
+        out_file.close()
+        sess.close()
 
 
 def main(unused_argv):
@@ -1135,15 +1192,13 @@ def main(unused_argv):
     # Where training checkpoints are stored.
     train_model_dir = FLAGS.train_model_dir
 
-    is_debug = FLAGS.is_debug
-
     logging.set_verbosity(logging.INFO)
 
     if is_train:
         if is_tuning_hyper_para:
             raise NotImplementedError('Implementation is under progress.')
         else:
-            train(init_learning_rate, decay_steps, decay_rate, epochs=train_epochs, debug=is_debug)
+            train(init_learning_rate, decay_steps, decay_rate, epochs=train_epochs)
     else:
         inference(train_model_dir)
 
@@ -1201,9 +1256,6 @@ if __name__ == '__main__':
 
     flags.DEFINE_string('train_model_dir', '/tmp/rbf-network/log_reg',
                         'The directory ')
-
-    # TODO, change it.
-    flags.DEFINE_boolean('is_debug', True, 'Boolean variable to indicate debug or not.')
 
     flags.DEFINE_string('output_file', '/tmp/rbf-network/predictions.csv', 'The file to save the predictions to.')
 
