@@ -105,12 +105,13 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
     # Initialize the variables (like the epoch counter).
     sess.run(init_op)
 
+    # Write graph definition.
     output_dir = FLAGS.output_dir
     tf.train.write_graph(sess.graph, path_join(output_dir, 'rnd_sample'),
-                         '{}.pb'.format(int(time.time())), as_text=False)
+                         'sample_{}.pb'.format(int(time.time())), as_text=False)
 
     # Find num_centers_ratio of the total examples.
-    accum_sample = [[], [], [], []]
+    accum_sample = [[]] * 4
     # Start input enqueue threads.
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
@@ -120,8 +121,9 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
             # Sample once.
             partial_sample_val = sess.run(partial_sample)
 
+            # bool_mask might return empty numpy array.
             for idx, indicator in enumerate(mask):
-                if indicator and partial_sample_val[idx].size > 0:
+                if indicator and (partial_sample_val[idx].size > 0):
                     accum_sample[idx].append(partial_sample_val[idx])
 
     except tf.errors.OutOfRangeError:
@@ -134,7 +136,7 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
     coord.join(threads)
     sess.close()
 
-    a_sample = [None, None, None, None]
+    a_sample = [None] * 4
 
     for idx, indicator in enumerate(mask):
         if indicator:
@@ -306,11 +308,11 @@ def kmeans_iter(centers, data_pipeline=None, metric='cosine', return_mean_clu_di
 
 
 def mini_batch_kmeans():
-    pass
+    raise NotImplementedError('Not implemented. Batch kmeans works fast enough now.')
 
 
 def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosine',
-               max_iter=20, tol=1.0, scaling_method=1, alpha=0.1, p=3):
+               max_iter=100, tol=1.0, scaling_method=1, alpha=0.1, p=3):
     """
     This functions implements the following two phases:
     1. To initialize representative prototypes (RBF centers) c and scaling factors sigma.
@@ -342,7 +344,8 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
         NotImplementedError if metric is not euclidean or cosine.
     """
     logging.info('Generate a group of centers for all labels. See Schwenker.')
-    if num_centers_ratio <= 0.0 or num_centers_ratio > 1.0:
+    # Argument checking.
+    if (num_centers_ratio <= 0.0) or (num_centers_ratio > 1.0):
         raise ValueError('num_centers_ratio must be larger than 0.0 and no greater than 1.0.')
     logging.info('num_centers_ratio is {}.'.format(num_centers_ratio))
 
@@ -351,11 +354,12 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
     else:
         raise NotImplementedError('Only euclidean and cosine distance are supported, {} passed.'.format(metric))
 
+    # Sample features only.
     _, centers, _, _ = random_sample(num_centers_ratio, mask=(False, True, False, False), data_pipeline=data_pipeline)
     logging.info('Sampled {} centers totally.'.format(len(centers)))
     logging.debug('Randomly selected centers: {}'.format(centers))
 
-    # Used in scaling method 4.
+    # Used in scaling method 4. Average distance of each point with its cluster center.
     per_clu_mean_dist = None
     # Perform kmeans or online kmeans.
     if method is None:
@@ -397,7 +401,7 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
         pairwise_distances = sci_distance.pdist(centers, metric=metric)
         p = min(p, len(pairwise_distances))
         logging.info('Using {} minimal pairwise distances.'.format(p))
-        # np.partition begins with 1 instead of 0.
+        # np.partition second argument begins with 1 instead of 0.
         sigmas = np.array([alpha * np.mean(np.partition(pairwise_distances, p - 1)[:p])] * num_centers,
                           dtype=np.float32)
     elif scaling_method == 2:
@@ -865,7 +869,7 @@ if __name__ == '__main__':
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
     # Added current timestamp.
-    flags.DEFINE_string('output_dir', '/tmp/video_level/rbf-network',
+    flags.DEFINE_string('output_dir', '/tmp/video_level',
                         'The directory where intermediate and model checkpoints should be written.')
 
     flags.DEFINE_string('train_model_dir', '/tmp/video_level/rbf-network',

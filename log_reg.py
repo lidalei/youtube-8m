@@ -1,5 +1,10 @@
 """
 One-vs-all logistic regression.
+
+Note:
+    Normalizing features will lead to much faster convergence.
+TODO:
+    Add layers to form a neural network.
 """
 import tensorflow as tf
 import time
@@ -86,12 +91,13 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
     # Initialize the variables (like the epoch counter).
     sess.run(init_op)
 
+    # Write graph definition.
     output_dir = FLAGS.output_dir
     tf.train.write_graph(sess.graph, path_join(output_dir, 'rnd_sample'),
-                         '{}.pb'.format(int(time.time())), as_text=False)
+                         'sample_{}.pb'.format(int(time.time())), as_text=False)
 
     # Find num_centers_ratio of the total examples.
-    accum_sample = [[], [], [], []]
+    accum_sample = [[]] * 4
     # Start input enqueue threads.
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
@@ -101,8 +107,9 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
             # Sample once.
             partial_sample_val = sess.run(partial_sample)
 
+            # bool_mask might return empty numpy array.
             for idx, indicator in enumerate(mask):
-                if indicator and partial_sample_val[idx].size > 0:
+                if indicator and (partial_sample_val[idx].size > 0):
                     accum_sample[idx].append(partial_sample_val[idx])
 
     except tf.errors.OutOfRangeError:
@@ -115,7 +122,7 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
     coord.join(threads)
     sess.close()
 
-    a_sample = [None, None, None, None]
+    a_sample = [None] * 4
 
     for idx, indicator in enumerate(mask):
         if indicator:
@@ -517,6 +524,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None):
     # Sample validate set for line search in linear classifier or logistic regression early stopping.
     _, validate_data, validate_labels, _ = random_sample(0.1, mask=(False, True, True, False),
                                                          data_pipeline=validate_data_pipeline)
+
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
                                        batch_size=batch_size, num_readers=num_readers)
 
