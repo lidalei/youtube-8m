@@ -391,7 +391,7 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
     sv.stop()
 
 
-def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None):
+def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, epochs=None):
     """
     Training.
 
@@ -399,6 +399,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None):
         init_learning_rate: Initial learning rate.
         decay_steps: How many training steps to decay learning rate once.
         decay_rate: How much to decay learning rate.
+        l2_reg_rate: l2 regularization rate.
         epochs: The maximal epochs to pass all training data.
 
     Returns:
@@ -436,12 +437,12 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None):
 
         log_reg_fit(train_data_pipeline, validate_set=(validate_data, validate_labels),
                     init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
-                    epochs=epochs, l2_reg_rate=0.01, initial_weights=linear_clf_weights,
+                    epochs=epochs, l2_reg_rate=l2_reg_rate, initial_weights=linear_clf_weights,
                     initial_biases=linear_clf_biases)
     else:
         log_reg_fit(train_data_pipeline, validate_set=(validate_data, validate_labels),
                     init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
-                    epochs=epochs, l2_reg_rate=0.01, initial_weights=None, initial_biases=None)
+                    epochs=epochs, l2_reg_rate=l2_reg_rate, initial_weights=None, initial_biases=None)
 
 
 def inference(train_model_dir):
@@ -532,6 +533,7 @@ def main(unused_argv):
     init_learning_rate = FLAGS.init_learning_rate
     decay_steps = FLAGS.decay_steps
     decay_rate = FLAGS.decay_rate
+    l2_reg_rate = FLAGS.l2_reg_rate
 
     train_epochs = FLAGS.train_epochs
     is_tuning_hyper_para = FLAGS.is_tuning_hyper_para
@@ -545,7 +547,7 @@ def main(unused_argv):
         if is_tuning_hyper_para:
             raise NotImplementedError('Implementation is under progress.')
         else:
-            train(init_learning_rate, decay_steps, decay_rate, epochs=train_epochs)
+            train(init_learning_rate, decay_steps, decay_rate=decay_rate, l2_reg_rate=l2_reg_rate, epochs=train_epochs)
     else:
         inference(train_model_dir)
 
@@ -581,12 +583,14 @@ if __name__ == '__main__':
     flags.DEFINE_boolean('init_with_linear_clf', False,
                          'Boolean variable indicating whether to init logistic regression with linear classifier.')
 
-    flags.DEFINE_float('init_learning_rate', 0.01, 'Float variable to indicate initial learning rate.')
+    flags.DEFINE_float('init_learning_rate', 0.1, 'Float variable to indicate initial learning rate.')
 
     flags.DEFINE_integer('decay_steps', NUM_TRAIN_EXAMPLES,
                          'Float variable indicating no. of examples to decay learning rate once.')
 
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
+
+    flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
 
     flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
