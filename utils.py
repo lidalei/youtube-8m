@@ -254,8 +254,8 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
     # tf.train.write_graph(sess.graph, path_join(output_dir, 'rnd_sample'),
     #                      'sample_{}.pb'.format(int(time.time())), as_text=False)
 
-    # Find num_centers_ratio of the total examples.
-    accum_sample = [[]] * 4
+    # Find num_centers_ratio of the total examples. Cannot use [[]] * 4, for Python will treat copy reference only.
+    accum_sample = [[], [], [], []]
     # Start input enqueue threads.
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
@@ -280,7 +280,7 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
     coord.join(threads)
     sess.close()
 
-    a_sample = [None] * 4
+    a_sample = [None, None, None, None]
 
     for idx, indicator in enumerate(mask):
         if indicator:
