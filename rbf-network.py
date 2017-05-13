@@ -946,7 +946,9 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
 
         tf.summary.histogram('log_reg_biases', biases)
 
-        output = tf.add(tf.matmul(video_batch, weights), biases, name='output')
+        # Normalize video batch.
+        normalized_video_batch = tf.nn.l2_normalize(video_batch, -1, name='normalized_video_batch')
+        output = tf.add(tf.matmul(normalized_video_batch, weights), biases, name='output')
         float_labels = tf.cast(video_labels_batch, tf.float32, name='float_labels')
         pred_prob = tf.nn.sigmoid(output, name='pred_probability')
 
@@ -993,10 +995,10 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
 
             validate_pred = tf.matmul(validate_data_var, weights) + biases
             validate_loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=float_validate_labels,logits=validate_pred, name='xentropy_per_ex_label')
+                labels=float_validate_labels,logits=validate_pred, name='x_entropy_per_ex_label')
 
             validate_loss_per_label = tf.reduce_mean(validate_loss_per_ex_label, axis=0,
-                                                     name='xentropy_per_label')
+                                                     name='x_entropy_per_label')
 
             validate_loss = tf.reduce_sum(validate_loss_per_label, name='x_entropy')
 
@@ -1226,7 +1228,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
 
     # Set by the memory limit (52GB).
-    flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 2048, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_float('num_centers_ratio', 0.001, 'The number of centers in RBF network.')
