@@ -10,7 +10,7 @@ import tensorflow as tf
 import time
 
 from readers import get_reader
-from utils import get_input_data_tensors, DataPipeline, random_sample
+from utils import get_input_data_tensors, DataPipeline, random_sample, load_sum_labels
 from tensorflow import flags, gfile, logging, app
 
 from os.path import join as path_join
@@ -230,7 +230,7 @@ def linear_classifier(data_pipeline=None, tr_data_fn=None, l2_regs=None,
 
 def log_reg_fit(train_data_pipeline, validate_set=None,
                 init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
-                epochs=None, l2_reg_rate=0.01, initial_weights=None, initial_biases=None):
+                epochs=None, l2_reg_rate=0.01, pos_weights=None, initial_weights=None, initial_biases=None):
     """
     Logistic regression.
     Args:
@@ -241,6 +241,8 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
         decay_rate: Decayed gradient descent parameter.
         epochs: Maximal epochs to use.
         l2_reg_rate: l2 regularizer rate.
+        pos_weights: For imbalanced binary classes. Here, num_pos << num_neg, the weights should be > 1.0.
+            If None, treated as 1.0 for all binary classifiers.
         initial_weights: If not None, the weights will be initialized with it.
         initial_biases: If not None, the biases will be initialized with it.
     Returns: None.
@@ -293,8 +295,12 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
         pred_prob = tf.nn.sigmoid(output, name='pred_probability')
 
         with tf.name_scope('train_loss'):
-            loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
-                labels=float_labels, logits=output, name='x_entropy_per_ex_label')
+            if pos_weights is None:
+                loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
+                    labels=float_labels, logits=output, name='x_entropy_per_ex_label')
+            else:
+                loss_per_ex_label = tf.nn.weighted_cross_entropy_with_logits(
+                    targets=float_labels, logits=output, pos_weight=pos_weights, name='x_entropy_per_ex_label')
 
             loss_per_label = tf.reduce_mean(loss_per_ex_label, axis=0, name='x_entropy_per_label')
             #  mean cross entropy over batch.
@@ -410,15 +416,26 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
 
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
                                           batch_size=batch_size, num_readers=num_readers)
-    # ...Start linear classifier...
+
     # Sample validate set for line search in linear classifier or logistic regression early stopping.
     _, validate_data, validate_labels, _ = random_sample(0.1, mask=(False, True, True, False),
                                                          data_pipeline=validate_data_pipeline)
+
+    # Set pos_weights for extremely imbalanced situation in one-vs-all classifiers.
+    try:
+        # Load sum_labels in training set, numpy float format to compute pos_weights.
+        train_sum_labels = load_sum_labels()
+        # num_neg / num_pos, assuming neg_weights === 1.0.
+        pos_weights = (float(NUM_TRAIN_EXAMPLES) - train_sum_labels) / train_sum_labels
+    except:
+        logging.error('Cannot load train sum_labels. Use default value.')
+        pos_weights = None
 
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
                                        batch_size=batch_size, num_readers=num_readers)
 
     if init_with_linear_clf:
+        # ...Start linear classifier...
         # Compute weights and biases of linear classifier using normal equation.
         linear_clf_weights, linear_clf_biases = linear_classifier(data_pipeline=train_data_pipeline,
                                                                   l2_regs=[0.001, 0.01, 0.1, 0.5],
@@ -429,15 +446,14 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
         logging.debug('linear classifier weights and {} biases: {}.'.format(linear_clf_weights,
                                                                             linear_clf_biases))
         # ...Exit linear classifier...
-
-        log_reg_fit(train_data_pipeline, validate_set=(validate_data, validate_labels),
-                    init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
-                    epochs=epochs, l2_reg_rate=l2_reg_rate, initial_weights=linear_clf_weights,
-                    initial_biases=linear_clf_biases)
     else:
-        log_reg_fit(train_data_pipeline, validate_set=(validate_data, validate_labels),
-                    init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
-                    epochs=epochs, l2_reg_rate=l2_reg_rate, initial_weights=None, initial_biases=None)
+        linear_clf_weights, linear_clf_biases = None, None
+
+    # Run logistic regression.
+    log_reg_fit(train_data_pipeline, validate_set=(validate_data, validate_labels),
+                init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
+                epochs=epochs, l2_reg_rate=l2_reg_rate, pos_weights=pos_weights,
+                initial_weights=linear_clf_weights, initial_biases=linear_clf_biases)
 
 
 def inference(train_model_dir):
@@ -578,7 +594,7 @@ if __name__ == '__main__':
     flags.DEFINE_boolean('init_with_linear_clf', False,
                          'Boolean variable indicating whether to init logistic regression with linear classifier.')
 
-    flags.DEFINE_float('init_learning_rate', 0.1, 'Float variable to indicate initial learning rate.')
+    flags.DEFINE_float('init_learning_rate', 0.01, 'Float variable to indicate initial learning rate.')
 
     flags.DEFINE_integer('decay_steps', NUM_TRAIN_EXAMPLES,
                          'Float variable indicating no. of examples to decay learning rate once.')
