@@ -22,7 +22,7 @@ import tensorflow as tf
 import time
 
 from readers import get_reader
-from utils import get_input_data_tensors, partial_data_features_mean, DataPipeline
+from utils import get_input_data_tensors, partial_data_features_mean, DataPipeline, random_sample
 from tensorflow import flags, gfile, logging, app
 
 from os.path import join as path_join, dirname
@@ -39,112 +39,6 @@ NUM_VALIDATE_EXAMPLES = None
 NUM_TEST_EXAMPLES = 700640
 
 MAX_TRAIN_STEPS = 1000000
-
-
-def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=None):
-    """
-    Randomly sample sample_ratio examples from data that specified reader by and data_pattern.
-    Args:
-        sample_ratio: The ratio of examples to be sampled. Range (0, 1.0].
-        mask: To keep which part or parts of video information, namely, id, features, labels and num of frames.
-        data_pipeline: A namedtuple consisting of the following elements. reader, See readers.py.
-            data_pattern, File Glob of data.
-            batch_size, The size of a batch. The last a few batches might have less examples.
-            num_readers, How many IO threads to enqueue example queue.
-    Returns:
-        Roughly the ratio of examples will be returned. If a part is not demanded, the corresponding part is None.
-    Raises:
-        ValueError, if sample_ratio is not larger than 0.0 or greater than 1.0. Or mask has not exactly 4 elements. Or
-            mask does not have one True.
-    """
-    if (sample_ratio <= 0.0) or (sample_ratio > 1.0):
-        raise ValueError('Invalid sample ratio: {}'.format(sample_ratio))
-
-    if (len(mask) != 4) or all(not e for e in mask):
-        raise ValueError('Invalid mask argument, require a tuple with exactly 4 boolean values and at least one True.')
-
-    # Create the graph to traverse all data once.
-    with tf.Graph().as_default() as graph:
-        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='rnd_sample'))
-
-        num_batch_videos = tf.shape(video_batch)[0]
-        rnd_nums = tf.random_uniform([num_batch_videos])
-        sample_mask = tf.less_equal(rnd_nums, sample_ratio)
-
-        if mask[0]:
-            video_id_partial_sample = tf.boolean_mask(video_id_batch, sample_mask)
-        else:
-            video_id_partial_sample = tf.no_op('no_video_id')
-
-        if mask[1]:
-            video_partial_sample = tf.boolean_mask(video_batch, sample_mask)
-        else:
-            video_partial_sample = tf.no_op('no_video_features')
-
-        if mask[2]:
-            video_labels_partial_sample = tf.boolean_mask(video_labels_batch, sample_mask)
-        else:
-            video_labels_partial_sample = tf.no_op('no_video_labels')
-
-        if mask[3]:
-            num_frames_partial_sample = tf.boolean_mask(num_frames_batch, sample_mask)
-        else:
-            num_frames_partial_sample = tf.no_op('no_video_num_frames')
-
-        partial_sample = [video_id_partial_sample, video_partial_sample,
-                          video_labels_partial_sample, num_frames_partial_sample]
-
-        # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
-        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-
-    graph.finalize()
-
-    # Create a session for running operations in the Graph.
-    sess = tf.Session(graph=graph)
-    # Initialize the variables (like the epoch counter).
-    sess.run(init_op)
-
-    # Write graph definition.
-    output_dir = FLAGS.output_dir
-    tf.train.write_graph(sess.graph, path_join(output_dir, 'rnd_sample'),
-                         'sample_{}.pb'.format(int(time.time())), as_text=False)
-
-    # Find num_centers_ratio of the total examples.
-    accum_sample = [[]] * 4
-    # Start input enqueue threads.
-    coord = tf.train.Coordinator()
-    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
-
-    try:
-        while not coord.should_stop():
-            # Sample once.
-            partial_sample_val = sess.run(partial_sample)
-
-            # bool_mask might return empty numpy array.
-            for idx, indicator in enumerate(mask):
-                if indicator and (partial_sample_val[idx].size > 0):
-                    accum_sample[idx].append(partial_sample_val[idx])
-
-    except tf.errors.OutOfRangeError:
-        logging.info('Done sampling -- one epoch finished.')
-    finally:
-        # When done, ask the threads to stop.
-        coord.request_stop()
-
-    # Wait for threads to finish.
-    coord.join(threads)
-    sess.close()
-
-    a_sample = [None] * 4
-
-    for idx, indicator in enumerate(mask):
-        if indicator:
-            a_sample[idx] = np.concatenate(accum_sample[idx], axis=0)
-
-    logging.info('The sample result has shape {}.'.format([e.shape if e is not None else e for e in a_sample]))
-
-    return a_sample
 
 
 def kmeans_iter(centers, data_pipeline=None, metric='cosine', return_mean_clu_dist=False):
