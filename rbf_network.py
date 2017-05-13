@@ -14,6 +14,9 @@ More specifically, three different frameworks are implemented. 1, for all L labe
  regression models. 3, for each label, finding a certain number of centers and train L logistic regression models on
  all these centers as a whole group. The first framework is described in Schwenker's as multi-class classification.
  The second one works as one-vs-all. And the third is described in Zhang's.
+
+First layer, feature transform using radius bias kernel functions.
+Second layer, logistic regression to learn classifiers, including tuning feature transformers and weights and biases.
 """
 import tensorflow as tf
 import time
