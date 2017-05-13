@@ -171,6 +171,9 @@ def GetListOfFeatureNamesAndSizes(feature_names, feature_sizes):
 
 
 def partial_data_features_mean():
+    """
+    Load approximate features mean for computing variance with numerical stability.
+    """
     folder = dirname(abspath(getsourcefile(lambda: 0)))
     with open(path_join(folder, 'constants/partial_data_features_mean.pickle'), 'rb') as pickle_file:
         try:
@@ -180,6 +183,20 @@ def partial_data_features_mean():
 
     # features_mean = {'mean_rgb': np.array([1024 floats]), 'mean_audio': np.array([128 floats])}
     return features_mean
+
+
+def load_sum_labels():
+    """
+    Load number of videos per label.
+    """
+    folder = dirname(abspath(getsourcefile(lambda: 0)))
+    with open(path_join(folder, 'ml-knn-model/sum_labels.pickle'), 'rb') as pickle_file:
+        try:
+            sum_labels = pickle.load(pickle_file)
+        except:
+            sum_labels = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
+
+    return sum_labels
 
 
 DataPipeline = namedtuple('DataPipeline', ['reader', 'data_pattern', 'batch_size', 'num_readers'])
@@ -365,5 +382,8 @@ def _get_input_data_tensors(reader=None, data_pattern=None, batch_size=2048, num
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
 
 # if __name__ == '__main__':
-#     features_mean = partial_data_features_mean()
-#     print(features_mean)
+    # features_mean = partial_data_features_mean()
+    # print(features_mean)
+
+    # sum_labels = load_sum_labels()
+    # print(sum_labels)
