@@ -277,7 +277,7 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
 
         # Define num_classes logistic regression models parameters.
         if initial_weights is None:
-            weights = tf.Variable(initial_value=tf.zeros([feature_size, num_classes]),
+            weights = tf.Variable(initial_value=tf.truncated_normal([feature_size, num_classes]),
                                   dtype=tf.float32, name='weights')
         else:
             weights = tf.Variable(initial_value=initial_weights, dtype=tf.float32, name='weights')
