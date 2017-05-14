@@ -308,6 +308,129 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
     return a_sample
 
 
+def compute_data_mean_std(data_pipeline=None, tr_data_fn=None):
+    """
+    Compute mean and standard deviations per feature (column) and mean of each label.
+
+    Note:
+        From Spark StandardScaler documentation.
+        * The "unit std" is computed using the corrected sample standard deviation
+        * (https://en.wikipedia.org/wiki/Standard_deviation#Corrected_sample_standard_deviation),
+        * which is computed as the square root of the unbiased sample variance.
+    Args:
+        data_pipeline: A namedtuple consisting of the following elements.
+            reader, video-level features reader or frame-level features reader.
+            data_pattern, File Glob of data set.
+            batch_size, How many examples to handle per time.
+            num_readers, How many IO threads to prefetch examples.
+        tr_data_fn: a function that transforms input data.
+
+    Returns:
+        Mean values of each feature column as a numpy array of rank 1.
+        Standard deviations of each feature column as a numpy array of rank 1.
+        Mean values of each label as a numpy array of rank 1.
+    """
+    reader = data_pipeline.reader
+    feature_names = reader.feature_names
+    feature_sizes = reader.feature_sizes
+    # Total number of features.
+    features_size = sum(feature_sizes)
+    num_classes = reader.num_classes
+
+    logging.info('Computing mean and std of {} features with sizes {} and mean of #{} labels.'.format(
+        feature_names, feature_sizes, num_classes))
+
+    # features_mean on partial data (600 + train files).
+    # Note, can only be used locally, not in google cloud.
+    try:
+        par_features_mean = partial_data_features_mean()
+    except IOError:
+        logging.error('Cannot locate partial_data_features_mean data file.')
+        par_features_mean = None
+
+    if par_features_mean is None:
+        approx_features_mean = np.zeros([features_size], dtype=np.float32)
+    else:
+        approx_features_mean = np.concatenate([par_features_mean[e] for e in feature_names])
+
+    # numerical stability with
+    # https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Computing_shifted_data.
+    # Create the graph to traverse all data once.
+    with tf.Graph().as_default() as graph:
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+            get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='features_mean_std'))
+
+        video_count = tf.Variable(initial_value=0.0, name='video_count')
+        features_sum = tf.Variable(initial_value=tf.zeros([features_size]), name='features_sum')
+        features_squared_sum = tf.Variable(initial_value=tf.zeros([features_size]), name='features_squared_sum')
+        labels_sum = tf.Variable(initial_value=tf.zeros([num_classes]), name='labels_sum')
+
+        batch_video_count = tf.cast(tf.shape(video_batch)[0], tf.float32)
+        # Compute shift features sum and squared sum.
+        shift = tf.constant(approx_features_mean, dtype=tf.float32, name='shift')
+        if par_features_mean is None:
+            # Don't shift, though not good.
+            shifted_video_batch = tf.identity(video_batch)
+        else:
+            shifted_video_batch = tf.subtract(video_batch, shift)
+
+        batch_features_sum = tf.reduce_sum(shifted_video_batch, axis=0, name='batch_features_sum')
+        batch_features_squared_sum = tf.reduce_sum(tf.square(shifted_video_batch), axis=0,
+                                                   name='batch_features_squared_sum')
+        batch_labels_sum = tf.reduce_sum(tf.cast(video_labels_batch, tf.float32), axis=0, name='batch_labels_sum')
+
+        update_video_count = tf.assign_add(video_count, batch_video_count)
+        update_features_sum = tf.assign_add(features_sum, batch_features_sum)
+        update_features_squared_sum = tf.assign_add(features_squared_sum, batch_features_squared_sum)
+        update_labels_sum = tf.assign_add(labels_sum, batch_labels_sum)
+
+        with tf.control_dependencies(
+                [update_video_count, update_features_sum, update_features_squared_sum, update_labels_sum]):
+            update_accum_non_op = tf.no_op()
+
+        # Define final results. To be run after all data have been handled.
+        features_mean = tf.add(tf.divide(features_sum, video_count), shift, name='features_mean')
+        # Corrected sample standard deviation.
+        features_variance = tf.divide(
+            tf.subtract(features_squared_sum, tf.scalar_mul(video_count, tf.square(features_mean))),
+            tf.subtract(video_count, 1.0), name='features_var')
+        features_std = tf.sqrt(features_variance, name='features_std')
+        labels_mean = tf.divide(labels_sum, video_count)
+
+        # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+    # Create a session for running operations in the Graph.
+    sess = tf.Session(graph=graph)
+
+    # Initialize the variables (like the epoch counter).
+    sess.run(init_op)
+
+    # Start input enqueue threads.
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+
+    try:
+        while not coord.should_stop():
+            _ = sess.run(update_accum_non_op)
+
+    except tf.errors.OutOfRangeError:
+        logging.info('Done features sum and squared sum and count computation -- one epoch finished.')
+    finally:
+        # When done, ask the threads to stop.
+        coord.request_stop()
+
+    # Wait for threads to finish.
+    coord.join(threads)
+
+    # After all data have been handled, fetch the statistics.
+    features_mean_val, features_std_val, labels_mean_val = sess.run([features_mean, features_std, labels_mean])
+
+    sess.close()
+
+    return features_mean_val, features_std_val, labels_mean_val
+
+
 def get_input_data_tensors(data_pipeline, shuffle=False, num_epochs=1, name_scope='input'):
     """
     Args:
