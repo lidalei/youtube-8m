@@ -187,7 +187,7 @@ def partial_data_features_mean():
 
 def load_sum_labels():
     """
-    Load number of videos per label.
+    Load number of videos per label in train data.
     """
     folder = dirname(abspath(getsourcefile(lambda: 0)))
     with open(path_join(folder, 'ml-knn-model/sum_labels.pickle'), 'rb') as pickle_file:
@@ -197,6 +197,28 @@ def load_sum_labels():
             sum_labels = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
 
     return sum_labels
+
+
+def load_features_mean_var(reader):
+    """
+    Load features mean in train data.
+    """
+    feature_names = reader.feature_names
+
+    folder = dirname(abspath(getsourcefile(lambda: 0)))
+    with open(path_join(folder, 'constants/train_data_features_mean.pickle'), 'rb') as f:
+        # {'mean_rgb': features_mean[:1024], 'mean_audio': features_mean[1024:]}
+        features_mean = pickle.load(f)
+        mean_tuple = [features_mean[feature] for feature in feature_names]
+        mean = np.concatenate(mean_tuple, axis=0)
+
+    with open(path_join(folder, 'constants/train_data_features_var.pickle'), 'rb') as f:
+        # {'mean_rgb': features_var[:1024], 'mean_audio': features_var[1024:]}
+        features_var = pickle.load(f)
+        var_tuple = [features_var[feature] for feature in feature_names]
+        var = np.concatenate(var_tuple, axis=0)
+
+    return mean, var
 
 
 DataPipeline = namedtuple('DataPipeline', ['reader', 'data_pattern', 'batch_size', 'num_readers'])
@@ -510,3 +532,20 @@ def _get_input_data_tensors(reader=None, data_pattern=None, batch_size=2048, num
 
     # sum_labels = load_sum_labels()
     # print(sum_labels)
+    # from readers import get_reader
+    # reader = get_reader('video', 'mean_rgb,mean_audio', '1024,128')
+    #
+    # train_data_pipeline = DataPipeline(reader=reader, data_pattern='video_level/train/train*.tfrecord',
+    #                                    batch_size=4096, num_readers=4)
+    #
+    # features_mean, features_var, labels_mean = compute_data_mean_var(data_pipeline=train_data_pipeline,
+    #                                                                  tr_data_fn=None)
+    #
+    # with open('constants/train_data_features_mean.pickle', 'wb') as f:
+    #     pickle.dump({'mean_rgb': features_mean[:1024], 'mean_audio': features_mean[1024:]}, f)
+    #
+    # with open('constants/train_data_features_var.pickle', 'wb') as f:
+    #     pickle.dump({'mean_rgb': features_var[:1024], 'mean_audio': features_var[1024:]}, f)
+
+    # maen, var = load_features_mean_var(reader)
+    # pass
