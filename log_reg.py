@@ -12,6 +12,7 @@ import time
 from readers import get_reader
 from utils import get_input_data_tensors, DataPipeline, random_sample, load_sum_labels
 from tensorflow import flags, gfile, logging, app
+from eval_util import calculate_gap
 
 from os.path import join as path_join
 import numpy as np
@@ -341,7 +342,8 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
 
             float_validate_labels = tf.cast(validate_labels_var, tf.float32, name='float_labels')
 
-            validate_pred = tf.matmul(validate_data_var, weights) + biases
+            validate_pred = tf.add(tf.matmul(validate_data_var, weights), biases)
+            validate_pred_prob = tf.nn.sigmoid(validate_pred, name='validate_pred_prob')
             validate_loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=float_validate_labels, logits=validate_pred, name='x_entropy_per_ex_label')
 
@@ -382,7 +384,15 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
                 saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
                 break
 
-            if step % 100 == 0:
+            if step % 1000 == 0:
+                _, summary, validate_loss_val, global_step_val, validate_pred_prob_val = sess.run(
+                    [train_op, summary_op, validate_loss, global_step, validate_pred_prob])
+                # global_step will be found automatically.
+                sv.summary_computed(sess, summary, global_step=global_step_val)
+
+                validate_gap = calculate_gap(validate_pred_prob_val, validate_labels)
+                logging.info('Step {}: validate gap: {}.'.format(global_step_val, validate_gap))
+            elif step % 100 == 0:
                 _, summary, validate_loss_val, global_step_val = sess.run(
                     [train_op, summary_op, validate_loss, global_step])
                 # global_step will be found automatically.
