@@ -10,7 +10,7 @@ import tensorflow as tf
 import time
 
 from readers import get_reader
-from utils import get_input_data_tensors, DataPipeline, random_sample, load_sum_labels
+from utils import get_input_data_tensors, DataPipeline, random_sample, load_sum_labels, load_features_mean_var
 from tensorflow import flags, gfile, logging, app
 from eval_util import calculate_gap
 
@@ -230,13 +230,14 @@ def linear_classifier(data_pipeline=None, tr_data_fn=None, l2_regs=None,
     return best_weights_val, best_biases_val
 
 
-def log_reg_fit(train_data_pipeline, validate_set=None,
+def log_reg_fit(train_data_pipeline, train_features_mean_var=None, validate_set=None,
                 init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
                 epochs=None, l2_reg_rate=0.01, pos_weights=None, initial_weights=None, initial_biases=None):
     """
     Logistic regression.
     Args:
         train_data_pipeline: A namedtuple consisting of reader, data_pattern, batch_size and num_readers.
+        train_features_mean_var: For train data standardization.
         validate_set: If not None, check validation loss regularly. Else, ignored.
         init_learning_rate: Decayed gradient descent parameter.
         decay_steps: Decayed gradient descent parameter.
@@ -292,8 +293,22 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
 
         tf.summary.histogram('log_reg_biases', biases)
 
-        # normalized_video_batch = tf.nn.l2_normalize(video_batch, -1, name='normalized_video_batch')
-        output = tf.add(tf.matmul(video_batch, weights), biases, name='output')
+        if train_features_mean_var is None:
+            # normalized_video_batch = tf.nn.l2_normalize(video_batch, -1, name='normalized_video_batch')
+            # For program consistency.
+            features_mean = tf.Variable(initial_value=0.0, trainable=False, name='features_mean')
+            features_var = tf.Variable(initial_value=1.0, trainable=False, name='features_var')
+            output = tf.add(tf.matmul(video_batch, weights), biases, name='output')
+        else:
+            mean, var = train_features_mean_var
+            features_mean = tf.Variable(initial_value=mean, trainable=False, name='features_mean')
+            features_var = tf.Variable(initial_value=var, trainable=False, name='features_var')
+            standardized_video_batch = tf.nn.batch_normalization(video_batch,
+                                                                 mean=features_mean, variance=features_var,
+                                                                 offset=None, scale=None, variance_epsilon=1e-12,
+                                                                 name='standardized_video_batch')
+            output = tf.add(tf.matmul(standardized_video_batch, weights), biases, name='output')
+
         float_labels = tf.cast(video_labels_batch, tf.float32, name='float_labels')
         pred_prob = tf.nn.sigmoid(output, name='pred_probability')
 
@@ -342,7 +357,15 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
 
             float_validate_labels = tf.cast(validate_labels_var, tf.float32, name='float_labels')
 
-            validate_pred = tf.add(tf.matmul(validate_data_var, weights), biases)
+            if train_features_mean_var is None:
+                validate_pred = tf.add(tf.matmul(validate_data_var, weights), biases)
+            else:
+                standardized_validate_data = tf.nn.batch_normalization(validate_data,
+                                                                       mean=features_mean, variance=features_var,
+                                                                       offset=None, scale=None, variance_epsilon=1e-12,
+                                                                       name='standardized_validate_data')
+                validate_pred = tf.add(tf.matmul(standardized_validate_data, weights), biases, name='validate_pred')
+
             validate_pred_prob = tf.nn.sigmoid(validate_pred, name='validate_pred_prob')
             validate_loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
                 labels=float_validate_labels, logits=validate_pred, name='x_entropy_per_ex_label')
@@ -365,7 +388,8 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
     # Save trainable variables only.
-    saver = tf.train.Saver(var_list=[weights, biases, global_step], max_to_keep=20, keep_checkpoint_every_n_hours=0.2)
+    saver = tf.train.Saver(var_list=[weights, biases, global_step, features_mean, features_var],
+                           max_to_keep=20, keep_checkpoint_every_n_hours=0.2)
     # To avoid summary causing memory usage peak, manually save summaries.
     sv = tf.train.Supervisor(graph=graph, init_op=init_op, logdir=log_dir, global_step=global_step, summary_op=None,
                              save_model_secs=600, saver=saver)
@@ -467,8 +491,12 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
     else:
         linear_clf_weights, linear_clf_biases = None, None
 
+    # Compute train data mean and std.
+    train_features_mean, train_features_var = load_features_mean_var(reader)
+
     # Run logistic regression.
-    log_reg_fit(train_data_pipeline, validate_set=(validate_data, validate_labels),
+    log_reg_fit(train_data_pipeline, train_features_mean_var=(train_features_mean, train_features_var),
+                validate_set=(validate_data, validate_labels),
                 init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
                 epochs=epochs, l2_reg_rate=l2_reg_rate, pos_weights=pos_weights,
                 initial_weights=linear_clf_weights, initial_biases=linear_clf_biases)
