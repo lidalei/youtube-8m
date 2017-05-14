@@ -308,9 +308,9 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
     return a_sample
 
 
-def compute_data_mean_std(data_pipeline=None, tr_data_fn=None):
+def compute_data_mean_var(data_pipeline=None, tr_data_fn=None):
     """
-    Compute mean and standard deviations per feature (column) and mean of each label.
+    Compute mean and variance per feature (column) and mean of each label.
 
     Note:
         From Spark StandardScaler documentation.
@@ -394,7 +394,7 @@ def compute_data_mean_std(data_pipeline=None, tr_data_fn=None):
         features_variance = tf.divide(
             tf.subtract(features_squared_sum, tf.scalar_mul(video_count, tf.square(features_mean))),
             tf.subtract(video_count, 1.0), name='features_var')
-        features_std = tf.sqrt(features_variance, name='features_std')
+        # features_std = tf.sqrt(features_variance, name='features_std')
         labels_mean = tf.divide(labels_sum, video_count)
 
         # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
@@ -424,11 +424,11 @@ def compute_data_mean_std(data_pipeline=None, tr_data_fn=None):
     coord.join(threads)
 
     # After all data have been handled, fetch the statistics.
-    features_mean_val, features_std_val, labels_mean_val = sess.run([features_mean, features_std, labels_mean])
+    features_mean_val, features_var_val, labels_mean_val = sess.run([features_mean, features_variance, labels_mean])
 
     sess.close()
 
-    return features_mean_val, features_std_val, labels_mean_val
+    return features_mean_val, features_var_val, labels_mean_val
 
 
 def get_input_data_tensors(data_pipeline, shuffle=False, num_epochs=1, name_scope='input'):
