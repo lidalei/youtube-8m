@@ -430,7 +430,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
         # Load sum_labels in training set, numpy float format to compute pos_weights.
         train_sum_labels = load_sum_labels()
         # num_neg / num_pos, assuming neg_weights === 1.0.
-        pos_weights = (float(NUM_TRAIN_EXAMPLES) - train_sum_labels) / train_sum_labels
+        pos_weights = np.sqrt((float(NUM_TRAIN_EXAMPLES) - train_sum_labels) / train_sum_labels)
         logging.info('Computing pos_weights based on sum_labels in train set successfully.')
     except:
         logging.error('Cannot load train sum_labels. Use default value.')
