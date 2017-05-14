@@ -292,8 +292,8 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
 
         tf.summary.histogram('log_reg_biases', biases)
 
-        normalized_video_batch = tf.nn.l2_normalize(video_batch, -1, name='normalized_video_batch')
-        output = tf.add(tf.matmul(normalized_video_batch, weights), biases, name='output')
+        # normalized_video_batch = tf.nn.l2_normalize(video_batch, -1, name='normalized_video_batch')
+        output = tf.add(tf.matmul(video_batch, weights), biases, name='output')
         float_labels = tf.cast(video_labels_batch, tf.float32, name='float_labels')
         pred_prob = tf.nn.sigmoid(output, name='pred_probability')
 
@@ -373,9 +373,9 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
     with sv.managed_session() as sess:
         logging.info("Entering training loop...")
         # Set validate set.
-        normalized_validate_data = validate_data / np.clip(
-            np.linalg.norm(validate_data , axis=-1, keepdims=True), 1e-6, np.PINF)
-        sess.run(set_validate_non_op, feed_dict={validate_data_initializer: normalized_validate_data,
+        # normalized_validate_data = validate_data / np.clip(
+        #     np.linalg.norm(validate_data , axis=-1, keepdims=True), 1e-6, np.PINF)
+        sess.run(set_validate_non_op, feed_dict={validate_data_initializer: validate_data,
                                                  validate_labels_initializer: validate_labels})
         logging.info('Set validate set in the graph for future use.')
         for step in xrange(1, MAX_TRAIN_STEPS):
@@ -444,6 +444,9 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
         logging.info('Computing pos_weights based on sum_labels in train set successfully.')
     except:
         logging.error('Cannot load train sum_labels. Use default value.')
+        pos_weights = None
+    finally:
+        # Set it as None to disable pos_weights.
         pos_weights = None
 
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
