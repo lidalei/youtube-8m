@@ -276,7 +276,7 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
 
         # Define num_classes logistic regression models parameters.
         if initial_weights is None:
-            weights = tf.Variable(initial_value=tf.truncated_normal([feature_size, num_classes]),
+            weights = tf.Variable(initial_value=tf.zeros([feature_size, num_classes]),
                                   dtype=tf.float32, name='weights')
         else:
             weights = tf.Variable(initial_value=initial_weights, dtype=tf.float32, name='weights')
@@ -309,7 +309,7 @@ def log_reg_fit(train_data_pipeline, validate_set=None,
             weights_l2_loss_per_label = tf.reduce_sum(tf.square(weights), axis=0, name='weights_l2_loss_per_label')
             weights_l2_loss = tf.reduce_sum(weights_l2_loss_per_label, name='weights_l2_loss')
 
-            final_loss = tf.add(loss, tf.multiply(l2_reg_rate, weights_l2_loss))
+            final_loss = tf.add(loss, tf.multiply(l2_reg_rate, weights_l2_loss), name='final_loss')
 
             tf.summary.histogram('weights_l2_loss_per_label', weights_l2_loss_per_label)
             tf.summary.scalar('weights_l2_loss', weights_l2_loss)
@@ -427,6 +427,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
         train_sum_labels = load_sum_labels()
         # num_neg / num_pos, assuming neg_weights === 1.0.
         pos_weights = (float(NUM_TRAIN_EXAMPLES) - train_sum_labels) / train_sum_labels
+        logging.info('Computing pos_weights based on sum_labels in train set successfully.')
     except:
         logging.error('Cannot load train sum_labels. Use default value.')
         pos_weights = None
