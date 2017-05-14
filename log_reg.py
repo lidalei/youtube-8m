@@ -166,7 +166,8 @@ def linear_classifier(data_pipeline=None, tr_data_fn=None, l2_regs=None,
 
         summary_op = tf.summary.merge_all()
 
-        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer(),
+                           name='init_glo_loc_var')
 
     sess = tf.Session(graph=graph)
     # Initialize variables.
@@ -587,7 +588,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
 
     # Set by the memory limit (52GB).
-    flags.DEFINE_integer('batch_size', 2048, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
