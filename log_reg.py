@@ -360,7 +360,7 @@ def log_reg_fit(train_data_pipeline, train_features_mean_var=None, validate_set=
             if train_features_mean_var is None:
                 validate_pred = tf.add(tf.matmul(validate_data_var, weights), biases)
             else:
-                standardized_validate_data = tf.nn.batch_normalization(validate_data,
+                standardized_validate_data = tf.nn.batch_normalization(validate_data_var,
                                                                        mean=features_mean, variance=features_var,
                                                                        offset=None, scale=None, variance_epsilon=1e-12,
                                                                        name='standardized_validate_data')
