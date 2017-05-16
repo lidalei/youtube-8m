@@ -2,7 +2,9 @@
 One-vs-all logistic regression.
 
 Note:
-    Normalizing features will lead to much faster convergence but worse performance.
+    1. Normalizing features will lead to much faster convergence but worse performance.
+    2. Instead, standard scaling features will help achieve better performance.
+    3. Initializing with linear regression will help get even better result.
 TODO:
     Add layers to form a neural network.
 """
@@ -473,14 +475,15 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
         # Set it as None to disable pos_weights.
         pos_weights = None
 
-    train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
-                                       batch_size=batch_size, num_readers=num_readers)
-
     if init_with_linear_clf:
         # ...Start linear classifier...
         # Compute weights and biases of linear classifier using normal equation.
-        linear_clf_weights, linear_clf_biases = linear_classifier(data_pipeline=train_data_pipeline,
-                                                                  l2_regs=[0.001, 0.01, 0.1, 0.5],
+        # Linear search helps little.
+        # Increase num_readers.
+        _train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
+                                            batch_size=batch_size, num_readers=4)
+        linear_clf_weights, linear_clf_biases = linear_classifier(data_pipeline=_train_data_pipeline,
+                                                                  l2_regs=[0.01, 0.1],
                                                                   validate_set=(validate_data, validate_labels),
                                                                   line_search=True)
         logging.info('linear classifier weights and biases with shape {}, {}'.format(linear_clf_weights.shape,
@@ -491,6 +494,8 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
     else:
         linear_clf_weights, linear_clf_biases = None, None
 
+    train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
+                                       batch_size=batch_size, num_readers=num_readers)
     # Compute train data mean and std.
     train_features_mean, train_features_var = load_features_mean_var(reader)
 
@@ -511,6 +516,7 @@ def inference(train_model_dir):
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
 
+    # TODO, bagging, load several trained models and average the predicstions.
     # Load pre-trained graph and corresponding variables.
     sess = tf.Session()
     latest_checkpoint = tf.train.latest_checkpoint(train_model_dir)
@@ -637,7 +643,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
 
-    flags.DEFINE_boolean('init_with_linear_clf', False,
+    flags.DEFINE_boolean('init_with_linear_clf', True,
                          'Boolean variable indicating whether to init logistic regression with linear classifier.')
 
     flags.DEFINE_float('init_learning_rate', 0.01, 'Float variable to indicate initial learning rate.')
