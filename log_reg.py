@@ -5,6 +5,7 @@ Note:
     1. Normalizing features will lead to much faster convergence but worse performance.
     2. Instead, standard scaling features will help achieve better performance.
     3. Initializing with linear regression will help get even better result.
+    4. Bagging is implemented as training separately but combining inferences from multiple models. 
 TODO:
     Add layers to form a neural network.
 """
@@ -233,7 +234,7 @@ def linear_classifier(data_pipeline=None, tr_data_fn=None, l2_regs=None,
 
 
 def log_reg_fit(train_data_pipeline, train_features_mean_var=None, validate_set=None,
-                init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
+                bootstrap=False, init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
                 epochs=None, l2_reg_rate=0.01, pos_weights=None, initial_weights=None, initial_biases=None):
     """
     Logistic regression.
@@ -241,6 +242,7 @@ def log_reg_fit(train_data_pipeline, train_features_mean_var=None, validate_set=
         train_data_pipeline: A namedtuple consisting of reader, data_pattern, batch_size and num_readers.
         train_features_mean_var: For train data standardization.
         validate_set: If not None, check validation loss regularly. Else, ignored.
+        bootstrap: If True, sampling training examples with replacement by differential weighting.
         init_learning_rate: Decayed gradient descent parameter.
         decay_steps: Decayed gradient descent parameter.
         decay_rate: Decayed gradient descent parameter.
@@ -322,8 +324,23 @@ def log_reg_fit(train_data_pipeline, train_features_mean_var=None, validate_set=
                 loss_per_ex_label = tf.nn.weighted_cross_entropy_with_logits(
                     targets=float_labels, logits=output, pos_weight=pos_weights, name='x_entropy_per_ex_label')
 
-            loss_per_label = tf.reduce_mean(loss_per_ex_label, axis=0, name='x_entropy_per_label')
-            #  mean cross entropy over batch.
+            # Mean over batch.
+            #  In addition to class weighting, example weighting is supported.
+            if bootstrap:
+                num_videos = tf.shape(loss_per_ex_label)[0]
+                sample_indices = tf.random_uniform([num_videos], maxval=num_videos, dtype=tf.int32,
+                                                   name='sample_indices')
+                example_weights = tf.unsorted_segment_sum(tf.ones([num_videos]), sample_indices, num_videos,
+                                                          name='example_weights')
+                # Insert second dimension to make use of broadcasting.
+                expanded_example_weights = tf.expand_dims(example_weights, axis=1)
+                loss_per_weighted_ex_label = tf.multiply(loss_per_ex_label, expanded_example_weights)
+                loss_per_label = tf.reduce_mean(loss_per_weighted_ex_label, axis=0,
+                                                name='x_entropy_per_label')
+            else:
+                loss_per_label = tf.reduce_mean(loss_per_ex_label, axis=0, name='x_entropy_per_label')
+
+            #  Sum cross entropy over label set.
             loss = tf.reduce_sum(loss_per_label, name='x_entropy')
             # Add regularizer.
             weights_l2_loss_per_label = tf.reduce_sum(tf.square(weights), axis=0, name='weights_l2_loss_per_label')
@@ -453,6 +470,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
     init_with_linear_clf = FLAGS.init_with_linear_clf
+    is_bootstrap = FLAGS.is_bootstrap
 
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
                                           batch_size=batch_size, num_readers=num_readers)
@@ -501,7 +519,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
 
     # Run logistic regression.
     log_reg_fit(train_data_pipeline, train_features_mean_var=(train_features_mean, train_features_var),
-                validate_set=(validate_data, validate_labels),
+                validate_set=(validate_data, validate_labels), bootstrap=is_bootstrap,
                 init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
                 epochs=epochs, l2_reg_rate=l2_reg_rate, pos_weights=pos_weights,
                 initial_weights=linear_clf_weights, initial_biases=linear_clf_biases)
@@ -620,11 +638,11 @@ if __name__ == '__main__':
 
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/train/train*.tfrecord',
+                        '/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord',
                         'File glob for the training dataset.')
 
     flags.DEFINE_string('validate_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/validate/validate*.tfrecord',
+                        '/Users/Sophie/Documents/youtube-8m-data/validate/validateq*.tfrecord',
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     flags.DEFINE_string('test_data_pattern',
@@ -642,6 +660,8 @@ if __name__ == '__main__':
     flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
+
+    flags.DEFINE_bool('is_bootstrap', True, 'Boolean variable indicating using bootstrap or not.')
 
     flags.DEFINE_boolean('init_with_linear_clf', True,
                          'Boolean variable indicating whether to init logistic regression with linear classifier.')
@@ -664,8 +684,9 @@ if __name__ == '__main__':
     flags.DEFINE_string('output_dir', '/tmp/video_level',
                         'The directory where intermediate and model checkpoints should be written.')
 
+    # Separated by , (csv separator), e.g., log_reg_rgb,log_reg_audio. Used in bagging.
     flags.DEFINE_string('train_model_dir', '/tmp/video_level/log_reg',
-                        'The directory ')
+                        'The directories where to load trained logistic regression models.')
 
     flags.DEFINE_string('output_file', '/tmp/video_level/log_reg/predictions.csv',
                         'The file to save the predictions to.')
