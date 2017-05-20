@@ -324,24 +324,22 @@ def log_reg_fit(train_data_pipeline, train_features_mean_var=None, validate_set=
                 loss_per_ex_label = tf.nn.weighted_cross_entropy_with_logits(
                     targets=float_labels, logits=output, pos_weight=pos_weights, name='x_entropy_per_ex_label')
 
+            # Sum over label set.
+            loss_per_ex = tf.reduce_sum(loss_per_ex_label, axis=1, name='loss_per_ex')
+
             # Mean over batch.
             #  In addition to class weighting, example weighting is supported.
             if bootstrap:
-                num_videos = tf.shape(loss_per_ex_label)[0]
+                num_videos = tf.shape(loss_per_ex)[0]
                 sample_indices = tf.random_uniform([num_videos], maxval=num_videos, dtype=tf.int32,
                                                    name='sample_indices')
                 example_weights = tf.unsorted_segment_sum(tf.ones([num_videos]), sample_indices, num_videos,
                                                           name='example_weights')
-                # Insert second dimension to make use of broadcasting.
-                expanded_example_weights = tf.expand_dims(example_weights, axis=1)
-                loss_per_weighted_ex_label = tf.multiply(loss_per_ex_label, expanded_example_weights)
-                loss_per_label = tf.reduce_mean(loss_per_weighted_ex_label, axis=0,
-                                                name='x_entropy_per_label')
+                weighted_loss_per_ex = tf.multiply(loss_per_ex, example_weights, name='weighted_loss_per_ex')
+                loss = tf.reduce_mean(weighted_loss_per_ex, name='x_entropy')
             else:
-                loss_per_label = tf.reduce_mean(loss_per_ex_label, axis=0, name='x_entropy_per_label')
+                loss = tf.reduce_mean(loss_per_ex, name='x_entropy')
 
-            #  Sum cross entropy over label set.
-            loss = tf.reduce_sum(loss_per_label, name='x_entropy')
             # Add regularizer.
             weights_l2_loss_per_label = tf.reduce_sum(tf.square(weights), axis=0, name='weights_l2_loss_per_label')
             weights_l2_loss = tf.reduce_sum(weights_l2_loss_per_label, name='weights_l2_loss')
@@ -350,7 +348,6 @@ def log_reg_fit(train_data_pipeline, train_features_mean_var=None, validate_set=
 
             tf.summary.histogram('weights_l2_loss_per_label', weights_l2_loss_per_label)
             tf.summary.scalar('weights_l2_loss', weights_l2_loss)
-            tf.summary.histogram('xentropy_per_label', loss_per_label)
             tf.summary.scalar('xentropy', loss)
 
         with tf.name_scope('optimization'):
