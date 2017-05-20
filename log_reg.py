@@ -276,6 +276,10 @@ def log_reg_fit(train_data_pipeline, train_features_mean_var=None, validate_set=
     # Build logistic regression graph and optimize it.
     graph = tf.Graph()
     with graph.as_default():
+        # Set seed to keep whole data sampling consistency, though impossible due to system variation.
+        seed = np.random.randint(2**28)
+        tf.set_random_seed(seed)
+
         global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
 
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
@@ -470,8 +474,9 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
     init_with_linear_clf = FLAGS.init_with_linear_clf
     is_bootstrap = FLAGS.is_bootstrap
 
+    # Increase num_readers.
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
-                                          batch_size=batch_size, num_readers=num_readers)
+                                          batch_size=batch_size, num_readers=2 * num_readers)
 
     # Sample validate set for line search in linear classifier or logistic regression early stopping.
     _, validate_data, validate_labels, _ = random_sample(0.1, mask=(False, True, True, False),
@@ -491,15 +496,15 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
         # Set it as None to disable pos_weights.
         pos_weights = None
 
+    train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
+                                       batch_size=batch_size, num_readers=num_readers)
+
     if init_with_linear_clf:
         # ...Start linear classifier...
         # Compute weights and biases of linear classifier using normal equation.
         # Linear search helps little.
-        # Increase num_readers.
-        _train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
-                                            batch_size=batch_size, num_readers=4)
-        linear_clf_weights, linear_clf_biases = linear_classifier(data_pipeline=_train_data_pipeline,
-                                                                  l2_regs=[0.01, 0.1],
+        linear_clf_weights, linear_clf_biases = linear_classifier(data_pipeline=train_data_pipeline,
+                                                                  l2_regs=[0.01],
                                                                   validate_set=(validate_data, validate_labels),
                                                                   line_search=True)
         logging.info('linear classifier weights and biases with shape {}, {}'.format(linear_clf_weights.shape,
@@ -510,8 +515,6 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
     else:
         linear_clf_weights, linear_clf_biases = None, None
 
-    train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
-                                       batch_size=batch_size, num_readers=num_readers)
     # Compute train data mean and std.
     train_features_mean, train_features_var = load_features_mean_var(reader)
 
