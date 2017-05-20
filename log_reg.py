@@ -335,6 +335,7 @@ def log_reg_fit(train_data_pipeline, train_features_mean_var=None, validate_set=
                                                    name='sample_indices')
                 example_weights = tf.unsorted_segment_sum(tf.ones([num_videos]), sample_indices, num_videos,
                                                           name='example_weights')
+                # bootstrap-weighted loss.
                 weighted_loss_per_ex = tf.multiply(loss_per_ex, example_weights, name='weighted_loss_per_ex')
                 loss = tf.reduce_mean(weighted_loss_per_ex, name='x_entropy')
             else:
@@ -533,19 +534,22 @@ def inference(train_model_dir):
 
     # TODO, bagging, load several trained models and average the predicstions.
     # Load pre-trained graph and corresponding variables.
-    sess = tf.Session()
-    latest_checkpoint = tf.train.latest_checkpoint(train_model_dir)
-    if latest_checkpoint is None:
-        raise Exception("unable to find a checkpoint at location: {}".format(train_model_dir))
-    else:
-        meta_graph_location = '{}{}'.format(latest_checkpoint, ".meta")
-        logging.info("loading meta-graph: {}".format(meta_graph_location))
-    pre_trained_saver = tf.train.import_meta_graph(meta_graph_location, clear_devices=True)
-    logging.info("restoring variables from {}".format(latest_checkpoint))
-    pre_trained_saver.restore(sess, latest_checkpoint)
-    # Get collections to be used in making predictions for test data.
-    video_input_batch = tf.get_collection('video_input_batch')[0]
-    pred_prob = tf.get_collection('predictions')[0]
+    g = tf.Graph()
+    with g.as_default():
+        latest_checkpoint = tf.train.latest_checkpoint(train_model_dir)
+        if latest_checkpoint is None:
+            raise Exception("unable to find a checkpoint at location: {}".format(train_model_dir))
+        else:
+            meta_graph_location = '{}{}'.format(latest_checkpoint, ".meta")
+            logging.info("loading meta-graph: {}".format(meta_graph_location))
+        pre_trained_saver = tf.train.import_meta_graph(meta_graph_location, clear_devices=True)
+        # Create a session to restore model parameters.
+        sess = tf.Session(graph=g)
+        logging.info("restoring variables from {}".format(latest_checkpoint))
+        pre_trained_saver.restore(sess, latest_checkpoint)
+        # Get collections to be used in making predictions for test data.
+        video_input_batch = tf.get_collection('video_input_batch')[0]
+        pred_prob = tf.get_collection('predictions')[0]
 
     # Get test data.
     test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern,
@@ -658,7 +662,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
 
-    flags.DEFINE_bool('is_bootstrap', True, 'Boolean variable indicating using bootstrap or not.')
+    flags.DEFINE_bool('is_bootstrap', False, 'Boolean variable indicating using bootstrap or not.')
 
     flags.DEFINE_boolean('init_with_linear_clf', True,
                          'Boolean variable indicating whether to init logistic regression with linear classifier.')
