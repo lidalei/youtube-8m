@@ -523,7 +523,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
                 initial_weights=linear_clf_weights, initial_biases=linear_clf_biases)
 
 
-def inference(train_model_dir):
+def inference(train_model_dirs_list):
     out_file_location = FLAGS.output_file
     top_k = FLAGS.top_k
     test_data_pattern = FLAGS.test_data_pattern
@@ -532,24 +532,32 @@ def inference(train_model_dir):
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
 
-    # TODO, bagging, load several trained models and average the predicstions.
-    # Load pre-trained graph and corresponding variables.
-    g = tf.Graph()
-    with g.as_default():
-        latest_checkpoint = tf.train.latest_checkpoint(train_model_dir)
-        if latest_checkpoint is None:
-            raise Exception("unable to find a checkpoint at location: {}".format(train_model_dir))
-        else:
-            meta_graph_location = '{}{}'.format(latest_checkpoint, ".meta")
-            logging.info("loading meta-graph: {}".format(meta_graph_location))
-        pre_trained_saver = tf.train.import_meta_graph(meta_graph_location, clear_devices=True)
-        # Create a session to restore model parameters.
-        sess = tf.Session(graph=g)
-        logging.info("restoring variables from {}".format(latest_checkpoint))
-        pre_trained_saver.restore(sess, latest_checkpoint)
-        # Get collections to be used in making predictions for test data.
-        video_input_batch = tf.get_collection('video_input_batch')[0]
-        pred_prob = tf.get_collection('predictions')[0]
+    # TODO, bagging, load several trained models and average the predictions.
+    sess_list, video_input_batch_list, pred_prob_list = [], [], []
+    for train_model_dir in train_model_dirs_list:
+        # Load pre-trained graph and corresponding variables.
+        g = tf.Graph()
+        with g.as_default():
+            latest_checkpoint = tf.train.latest_checkpoint(train_model_dir)
+            if latest_checkpoint is None:
+                raise Exception("unable to find a checkpoint at location: {}".format(train_model_dir))
+            else:
+                meta_graph_location = '{}{}'.format(latest_checkpoint, ".meta")
+                logging.info("loading meta-graph: {}".format(meta_graph_location))
+            pre_trained_saver = tf.train.import_meta_graph(meta_graph_location, clear_devices=True)
+
+            # Create a session to restore model parameters.
+            sess = tf.Session(graph=g)
+            logging.info("restoring variables from {}".format(latest_checkpoint))
+            pre_trained_saver.restore(sess, latest_checkpoint)
+            # Get collections to be used in making predictions for test data.
+            video_input_batch = tf.get_collection('video_input_batch')[0]
+            pred_prob = tf.get_collection('predictions')[0]
+
+            # Append session and input and predictions.
+            sess_list.append(sess)
+            video_input_batch_list.append(video_input_batch)
+            pred_prob_list.append(pred_prob)
 
     # Get test data.
     test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern,
@@ -583,10 +591,14 @@ def inference(train_model_dir):
                 video_id_batch_val, video_batch_val = test_sess.run([video_id_batch, video_batch])
                 logging.debug('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
 
-                batch_predictions_prob = sess.run(pred_prob, feed_dict={video_input_batch: video_batch_val})
+                batch_predictions_prob_list = []
+                for sess, video_input_batch, pred_prob in zip(sess_list, video_input_batch_list, pred_prob_list):
+                    batch_predictions_prob = sess.run(pred_prob, feed_dict={video_input_batch: video_batch_val})
+                    batch_predictions_prob_list.append(batch_predictions_prob)
 
+                batch_predictions_mean_prob = np.mean(np.stack(batch_predictions_prob_list, axis=0), axis=0)
                 # Write batch predictions to files.
-                for line in format_lines(video_id_batch_val, batch_predictions_prob, top_k):
+                for line in format_lines(video_id_batch_val, batch_predictions_mean_prob, top_k):
                     out_file.write(line)
                 out_file.flush()
 
@@ -607,7 +619,8 @@ def inference(train_model_dir):
 
         test_sess.close()
         out_file.close()
-        sess.close()
+        for sess in sess_list:
+            sess.close()
 
 
 def main(unused_argv):
@@ -621,7 +634,7 @@ def main(unused_argv):
     is_tuning_hyper_para = FLAGS.is_tuning_hyper_para
 
     # Where training checkpoints are stored.
-    train_model_dir = FLAGS.train_model_dir
+    train_model_dirs = FLAGS.train_model_dirs
 
     logging.set_verbosity(logging.INFO)
 
@@ -631,7 +644,8 @@ def main(unused_argv):
         else:
             train(init_learning_rate, decay_steps, decay_rate=decay_rate, l2_reg_rate=l2_reg_rate, epochs=train_epochs)
     else:
-        inference(train_model_dir)
+        train_model_dirs_list = [e.strip() for e in train_model_dirs.split(',')]
+        inference(train_model_dirs_list)
 
 
 if __name__ == '__main__':
@@ -686,7 +700,7 @@ if __name__ == '__main__':
                         'The directory where intermediate and model checkpoints should be written.')
 
     # Separated by , (csv separator), e.g., log_reg_rgb,log_reg_audio. Used in bagging.
-    flags.DEFINE_string('train_model_dir', '/tmp/video_level/log_reg',
+    flags.DEFINE_string('train_model_dirs', '/tmp/video_level/log_reg',
                         'The directories where to load trained logistic regression models.')
 
     flags.DEFINE_string('output_file', '/tmp/video_level/log_reg/predictions.csv',
