@@ -200,6 +200,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
     reader = get_reader(model_type, feature_names, feature_sizes)
 
     train_data_pattern = FLAGS.train_data_pattern
+    validate_data_pattern = FLAGS.validate_data_pattern
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
 
@@ -307,6 +308,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
     coord.join(threads)
     sess.close()
 
+    # Save models parameters.
     for k, count, counter_count in zip(k_list, count_list, counter_count_list):
         # Compute posterior probabilities.
         pos_prob_positive = (smooth_para + count) / (smooth_para * (k + 1) + count.sum(axis=0))
@@ -315,36 +317,27 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
         # Write to files for future use.
         save_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, model_dir)
 
+    # Output the best k in validate set.
+    validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
+                                          batch_size=batch_size, num_readers=num_readers)
+    _, validate_data, validate_labels, _ = random_sample(0.1, mask=(False, True, True, False),
+                                                         data_pipeline=validate_data_pipeline)
+
 
 class Predict(object):
-    def __init__(self, model_dir, k=8):
+    def __init__(self, train_data_pipeline, model_dir, k=8):
         """
         :param model_dir: The dir where model parameters are stored.
         :param k: The k in ml-knn. 
         """
+        self.train_data_pipeline = train_data_pipeline
         self.model_dir = model_dir
         self.k = k
 
-        test_data_pattern = FLAGS.test_data_pattern
-        train_data_pattern = FLAGS.train_data_pattern
-
-        model_type = FLAGS.model_type
-        batch_size = FLAGS.batch_size
-        num_readers = FLAGS.num_readers
-        feature_names = FLAGS.feature_names
-        feature_sizes = FLAGS.feature_sizes
-
-        reader = get_reader(model_type, feature_names, feature_sizes)
-        inner_reader = get_reader(model_type, feature_names, feature_sizes)
+        reader = train_data_pipeline.reader
         # Total number of classes.
         num_classes = reader.num_classes
         self.range_num_classes = range(num_classes)
-
-        self.test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern,
-                                               batch_size=batch_size, num_readers=num_readers)
-
-        self.train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern,
-                                                batch_size=2048, num_readers=1)
 
         # Load prior and posterior probabilities.
         self.sum_labels, self.accum_num_videos, self.labels_prior_prob = restore_prior_prob(folder=self.model_dir)
@@ -377,15 +370,16 @@ class Predict(object):
 
         return batch_predictions_prob
 
-    def make_predictions(self, output_file_loc, top_k=20):
+    def make_predictions(self, test_data_pipeline, output_file_loc, top_k=20):
         """
         Make predictions.
+        :param test_data_pipeline
         :param output_file_loc: The file to which predictions should be written to. Supports gcloud file.
         :param top_k: See FLAGS.top_k.
         """
         with tf.Graph().as_default() as g:
             video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-                self.test_data_pipeline, num_epochs=1)
+                test_data_pipeline, num_epochs=1)
 
             init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
@@ -450,12 +444,29 @@ def main(unused_argv):
         compute_prior_posterior_prob(k_list=k_list)
     else:
         model_dir = FLAGS.model_dir
+        k = FLAGS.pred_k
+
         output_file = FLAGS.output_file
         top_k = FLAGS.top_k
-        pred_k = FLAGS.pred_k
 
-        pred_obj = Predict(model_dir, k=pred_k)
-        pred_obj.make_predictions(output_file, top_k=top_k)
+        model_type = FLAGS.model_type
+        batch_size = FLAGS.batch_size
+        num_readers = FLAGS.num_readers
+        feature_names = FLAGS.feature_names
+        feature_sizes = FLAGS.feature_sizes
+
+        test_data_pattern = FLAGS.test_data_pattern
+        reader = get_reader(model_type, feature_names, feature_sizes)
+        test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern,
+                                          batch_size=batch_size, num_readers=num_readers)
+
+        train_data_pattern = FLAGS.train_data_pattern
+        inner_reader = get_reader(model_type, feature_names, feature_sizes)
+        train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern,
+                                           batch_size=2048, num_readers=1)
+
+        pred_obj = Predict(train_data_pipeline, model_dir, k=k)
+        pred_obj.make_predictions(test_data_pipeline, output_file, top_k=top_k)
 
 
 if __name__ == '__main__':
