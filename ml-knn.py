@@ -77,7 +77,8 @@ def compute_prior_prob(data_pipeline, smooth_para=1.0):
     return sum_labels_val, total_num_videos_val, labels_prior_prob_val
 
 
-def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_train, k=8):
+def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_train, k=8,
+                             logdir='/tmp/ml-knn/find-knn'):
     """
     Return k-nearest neighbors. https://www.tensorflow.org/programmers_guide/reading_data.
 
@@ -86,6 +87,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_trai
     :param data_pipeline:
     :param is_train: If True, exclude the most similar example (itself). 
     :param k: int.
+    :param logdir: path to log dir.
     :return: k-nearest videos, representing by (video_ids, video_labels)
     """
     num_videos = video_batch.shape[0]
@@ -150,13 +152,13 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_trai
         with tf.control_dependencies([global_step_inc_op, update_topk_sims_op, update_topk_labels_op]):
             update_topk_non_op = tf.no_op()
 
+        summary_op = tf.summary.merge_all()
         # Initialization of global and local variables (e.g., queue epoch).
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
     # A new graph needs a new session. Thus, create one.
     with tf.Session(graph=graph) as sess:
         sess.run(init_op)
-
         # initialize outer video batch. Current top k similarities are -2.0 (< minimum -1.0).
         sess.run([video_batch_normalized.initializer, topk_sims.initializer, topk_labels.initializer],
                  feed_dict={
@@ -166,14 +168,19 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_trai
                      topk_labels_initializer: np.zeros([num_videos, k, num_classes], dtype=np.bool)
                  })
 
+        writer = tf.summary.FileWriter(logdir, graph=sess.graph)
+
         # Start input enqueue threads.
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
         try:
             while not coord.should_stop():
+
                 # Run results are numpy arrays. Update topk_sims and tok_video_labels.
-                _, global_step_val = sess.run([update_topk_non_op, global_step])
+                _, global_step_val, summary = sess.run([update_topk_non_op, global_step, summary_op])
+
+                writer.add_summary(summary, global_step=global_step_val)
 
         except tf.errors.OutOfRangeError:
             logging.info('Done the whole data set - found k nearest neighbors.')
@@ -264,14 +271,16 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
         while not coord.should_stop():
             # Run training steps or whatever.
             start_time = time.time()
-            video_id_batch_val, video_batch_val, video_labels_batch_val = sess.run(
-                [video_id_batch, video_batch, video_labels_batch])
+            video_id_batch_val, video_batch_val, video_labels_batch_val, global_step_val, summary = sess.run(
+                [video_id_batch, video_batch, video_labels_batch, global_step_inc_op, summary_op])
+
+            writer.add_summary(summary, global_step=global_step_val)
 
             logging.info('video_id_batch shape: {}, video_batch shape: {}'.format(video_id_batch_val.shape,
                                                                                   video_batch_val.shape))
             # Smaller batch size and less number of readers.
-            _train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern, batch_size=2048,
-                                                num_readers=1)
+            _train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern, batch_size=4096,
+                                                num_readers=2)
             # Pass values instead of tensors.
             top_max_k_video_ids, top_max_k_labels = find_k_nearest_neighbors(video_id_batch_val,
                                                                              video_batch_val,
@@ -294,13 +303,10 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
 
                 # logging.debug('count: {}\ncounter_count: {}'.format(count_list[idx], counter_count_list[idx]))
 
-            global_step_val, summary = sess.run([global_step_inc_op, summary_op])
             now = time.time()
             tol_num_examples_processed += video_id_batch_val.shape[0]
             logging.info('Batch processing step {}, elapsed {} s, processed {} examples in total'.format(
                 global_step_val, now - start_time, tol_num_examples_processed))
-
-            writer.add_summary(summary, global_step=global_step_val)
 
     except tf.errors.OutOfRangeError:
         logging.info('Done training -- one epoch limit reached.')
@@ -482,7 +488,7 @@ def main(unused_argv):
         train_data_pattern = FLAGS.train_data_pattern
         inner_reader = get_reader(model_type, feature_names, feature_sizes)
         train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern,
-                                           batch_size=2048, num_readers=1)
+                                           batch_size=4096, num_readers=2)
 
         pred_obj = Predict(train_data_pipeline, model_dir, k=k)
         pred_obj.make_predictions(test_data_pipeline, output_file, top_k=top_k)
