@@ -90,6 +90,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_trai
     :param logdir: path to log dir.
     :return: k-nearest videos, representing by (video_ids, video_labels)
     """
+    logging.info('Entering find knn...')
     num_videos = video_batch.shape[0]
     reader = data_pipeline.reader
     num_classes = reader.num_classes
@@ -521,7 +522,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
 
     # Set by the memory limit. Larger values will reduce data passing times. For debug, use a small value, e.g., 1024.
-    flags.DEFINE_integer('batch_size', 30720, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 40960, 'Size of batch processing.')
     # For debug, use a single reader.
     flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
@@ -531,7 +532,7 @@ if __name__ == '__main__':
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
     # Separated by ,.
-    flags.DEFINE_string('ks', '1, 3, 8, 16, 32', 'k nearest neighbors to tune.')
+    flags.DEFINE_string('ks', '1, 3, 8, 12, 16', 'k nearest neighbors to tune.')
 
     flags.DEFINE_integer('pred_k', 8, 'The k nearest neighbor to make predictions.')
 
