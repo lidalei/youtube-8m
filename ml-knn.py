@@ -11,6 +11,7 @@ from tensorflow import flags, gfile, logging, app
 from inference import format_lines
 from utils import DataPipeline, get_input_data_tensors, random_sample
 from utils import save_prior_prob, save_posterior_prob, restore_prior_prob, restore_posterior_prob
+from eval_util import calculate_gap
 
 import time
 
@@ -320,8 +321,19 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
     # Output the best k in validate set.
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
                                           batch_size=batch_size, num_readers=num_readers)
-    _, validate_data, validate_labels, _ = random_sample(0.1, mask=(False, True, True, False),
-                                                         data_pipeline=validate_data_pipeline)
+    validate_ids, validate_data, validate_labels, _ = random_sample(0.1, mask=(True, True, True, False),
+                                                                    data_pipeline=validate_data_pipeline)
+    best_k = None
+    best_validate_gap = np.NINF
+    for k in k_list:
+        pred_obj = Predict(train_data_pipeline, model_dir, k=k)
+        predictions = pred_obj.make_batch_predictions(validate_ids, validate_data)
+        validate_gap = calculate_gap(predictions, validate_labels)
+        logging.info('k: {}, validate gap: {}'.format(k, validate_gap))
+        if validate_gap > best_validate_gap:
+            best_k = k
+            best_validate_gap = validate_gap
+    print('Best k: {}, with validate gap {}'.format(best_k, best_validate_gap))
 
 
 class Predict(object):
@@ -347,6 +359,8 @@ class Predict(object):
     def make_batch_predictions(self, video_id_batch_val, video_batch_val):
         """
         Make predictions for a batch of videos.
+        Return:
+            Predictions probabilities as a Numpy array.
         """
         topk_video_ids, topk_labels = find_k_nearest_neighbors(video_id_batch_val,
                                                                video_batch_val, self.train_data_pipeline,
@@ -368,7 +382,7 @@ class Predict(object):
             batch_predictions_prob.append(
                 np.true_divide(positive_prob_numerator, positive_prob_numerator + negative_prob_numerator))
 
-        return batch_predictions_prob
+        return np.array(batch_predictions_prob, dtype=np.float32)
 
     def make_predictions(self, test_data_pipeline, output_file_loc, top_k=20):
         """
@@ -379,7 +393,7 @@ class Predict(object):
         """
         with tf.Graph().as_default() as g:
             video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-                test_data_pipeline, num_epochs=1)
+                test_data_pipeline, num_epochs=1, name_scope='test_input')
 
             init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
@@ -503,7 +517,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
 
-    flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
+    flags.DEFINE_boolean('is_train', False, 'Boolean variable to indicate training or test.')
 
     flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
