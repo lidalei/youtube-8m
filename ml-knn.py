@@ -9,7 +9,7 @@ import numpy as np
 from readers import get_reader
 from tensorflow import flags, gfile, logging, app
 from inference import format_lines
-from utils import DataPipeline, get_input_data_tensors
+from utils import DataPipeline, get_input_data_tensors, random_sample
 from utils import save_prior_prob, save_posterior_prob, restore_prior_prob, restore_posterior_prob
 
 import time
@@ -317,14 +317,12 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
 
 
 class Predict(object):
-    def __init__(self, output_file_loc, top_k=20, k=8):
+    def __init__(self, model_dir, k=8):
         """
-        :param output_file_loc: The file to which predictions should be written to. Supports gcloud file.
-        :param top_k: See FLAGS.top_k.
+        :param model_dir: The dir where model parameters are stored.
         :param k: The k in ml-knn. 
         """
-        self.output_file_loc = output_file_loc
-        self.top_k = top_k
+        self.model_dir = model_dir
         self.k = k
 
         test_data_pattern = FLAGS.test_data_pattern
@@ -349,10 +347,9 @@ class Predict(object):
                                                 batch_size=2048, num_readers=1)
 
         # Load prior and posterior probabilities.
-        model_dir = FLAGS.model_dir
-        self.sum_labels, self.accum_num_videos, self.labels_prior_prob = restore_prior_prob(folder=model_dir)
+        self.sum_labels, self.accum_num_videos, self.labels_prior_prob = restore_prior_prob(folder=self.model_dir)
         self.count, self.counter_count, self.pos_prob_positive, self.pos_prob_negative = restore_posterior_prob(
-            self.k, folder=model_dir)
+            self.k, folder=self.model_dir)
 
     def make_batch_predictions(self, video_id_batch_val, video_batch_val):
         """
@@ -380,9 +377,11 @@ class Predict(object):
 
         return batch_predictions_prob
 
-    def make_predictions(self):
+    def make_predictions(self, output_file_loc, top_k=20):
         """
         Make predictions.
+        :param output_file_loc: The file to which predictions should be written to. Supports gcloud file.
+        :param top_k: See FLAGS.top_k.
         """
         with tf.Graph().as_default() as g:
             video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
@@ -390,7 +389,7 @@ class Predict(object):
 
             init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
-        with tf.Session(graph=g) as sess, gfile.Open(self.output_file_loc, "w+") as out_file:
+        with tf.Session(graph=g) as sess, gfile.Open(output_file_loc, "w+") as out_file:
             sess.run(init_op)
 
             # Be cautious to not be blocked by queue.
@@ -416,7 +415,7 @@ class Predict(object):
                     batch_predictions_prob = self.make_batch_predictions(video_id_batch_val, video_batch_val)
 
                     # Write batch predictions to files.
-                    for line in format_lines(video_id_batch_val, batch_predictions_prob, self.top_k):
+                    for line in format_lines(video_id_batch_val, batch_predictions_prob, top_k):
                         out_file.write(line)
                     out_file.flush()
 
@@ -427,7 +426,7 @@ class Predict(object):
                         processing_count, now - start_time, num_examples_processed))
 
             except tf.errors.OutOfRangeError:
-                logging.info('Done with inference. The predictions were written to {}'.format(self.output_file_loc))
+                logging.info('Done with inference. The predictions were written to {}'.format(output_file_loc))
             finally:
                 # When done, ask the threads to stop.
                 coord.request_stop()
@@ -450,12 +449,13 @@ def main(unused_argv):
 
         compute_prior_posterior_prob(k_list=k_list)
     else:
+        model_dir = FLAGS.model_dir
         output_file = FLAGS.output_file
         top_k = FLAGS.top_k
         pred_k = FLAGS.pred_k
 
-        pred_obj = Predict(output_file, top_k=top_k, k=pred_k)
-        pred_obj.make_predictions()
+        pred_obj = Predict(model_dir, k=pred_k)
+        pred_obj.make_predictions(output_file, top_k=top_k)
 
 
 if __name__ == '__main__':
