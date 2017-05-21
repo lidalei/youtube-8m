@@ -104,7 +104,7 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1.0):
                 sess.run(accum_non_op)
 
         except tf.errors.OutOfRangeError:
-            logging.info('Done the whole dataset.')
+            logging.info('Done the whole data set.')
         finally:
             # When done, ask the threads to stop.
             coord.request_stop()
@@ -123,7 +123,7 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1.0):
     return sum_labels_val, total_num_videos_val, labels_prior_prob_val
 
 
-def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, batch_size=8192, num_readers=1, k=3):
+def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, batch_size=2048, num_readers=1, k=8):
     """
     Return k-nearest neighbors. https://www.tensorflow.org/programmers_guide/reading_data.
 
@@ -225,20 +225,6 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
                 # Run results are numpy arrays. Update topk_sims and tok_video_labels.
                 _, global_step_val = sess.run([update_topk_non_op, global_step])
 
-                # stack them into numpy array with shape [batch_size, k] (id) or [batch_size, k, num_classes] (labels).
-                # np.stack() can be np.array().
-                # Removed video_ids.
-                # batch_topk_video_ids = np.stack([video_id_batch_inner_val[ind] for ind in batch_topk_sim_indices])
-
-                # if debug:
-                #     # Debug mode.
-                #     print('video_id_batch: {}'.format(video_id_batch))
-                #     print('batch_topk_sims: {}\nbatch_topk_sim_indices: {}'.format(batch_topk_sims,
-                #                                                                    batch_topk_sim_indices))
-                #     print('batch_topk_video_ids: {}\nbatch_topk_labels: {}'.format(batch_topk_video_ids,
-                #                                                                          batch_topk_labels))
-                #     coord.request_stop()
-
         except tf.errors.OutOfRangeError:
             logging.info('Done the whole data set - found k nearest neighbors.')
         finally:
@@ -253,27 +239,19 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         sess.close()
 
     if is_train:
-        # Exclude the example itself if it exists.
-        # clean_topk_video_ids, clean_topk_labels = [], []
-        # for video_id, topk_video_id, topk_video_label in zip(video_id_batch, topk_video_ids, topk_labels):
-        #     if topk_video_id[0] == video_id:
-        #         clean_topk_video_ids.append(topk_video_id[1:])
-        #         clean_topk_labels.append(topk_video_label[1:])
-        #     else:
-        #         clean_topk_video_ids.append(topk_video_id[:k])
-        #         clean_topk_labels.append(topk_video_label[:k])
-        #
-        # return np.stack(clean_topk_video_ids), np.stack(clean_topk_labels)
-        # Removed video_ids.
-        # return topk_video_ids[:, 1:], topk_labels[:, 1:]
         return None, final_topk_labels[:, 1:]
     else:
-        # Removed video_ids.
-        # return topk_video_ids, topk_labels
         return None, final_topk_labels
 
 
 def store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder=''):
+    # Create the directory if it does not exist.
+    if not tf.gfile.Exists(folder):
+        try:
+            tf.gfile.MakeDirs(folder)
+        except tf.errors.OpError:
+            logging.error("Failed to create dir {}. Please manually create it.".format(folder))
+
     with open(path_join(folder, 'sum_labels.pickle'), 'wb') as pickle_file:
         pickle.dump(sum_labels, pickle_file)
 
@@ -307,6 +285,13 @@ def recover_prior_prob(folder=''):
 
 
 def store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, folder=''):
+    # Create the directory if it does not exist.
+    if not tf.gfile.Exists(folder):
+        try:
+            tf.gfile.MakeDirs(folder)
+        except tf.errors.OpError:
+            logging.error("Failed to create dir {}. Please manually create it.".format(folder))
+
     with open(path_join(folder, 'count_{}.pickle'.format(k)), 'wb') as pickle_file:
         pickle.dump(count, pickle_file)
 
@@ -348,13 +333,11 @@ def recover_posterior_prob(k, folder=''):
     return count, counter_count, pos_prob_positive, pos_prob_negative
 
 
-def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
-    # For debug, use a single tfrecord file (debug mode).
-    train_data_pattern = '/Users/Sophie/Documents/youtube-8m-data/train/trainaW.tfrecord' \
-        if debug else FLAGS.train_data_pattern
+def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
+    train_data_pattern = FLAGS.train_data_pattern
 
-    batch_size = 1024 if debug else FLAGS.batch_size
-    num_readers = 1 if debug else FLAGS.num_readers
+    batch_size = FLAGS.batch_size
+    num_readers = FLAGS.num_readers
     model_dir = FLAGS.model_dir
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
@@ -370,12 +353,16 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     # Total number of classes.
     num_classes = reader.num_classes
     range_num_classes = range(num_classes)
+
+    max_k = max(k_list)
     # For each possible class, define a count and counter_count to count.
     # Compute the posterior probability, namely, given a label l, counting the number of training examples that have
     # exactly j (0 <= j <= k) nearest neighbors that have label l and normalizing it.
     # Here, j is considered as a random variable.
-    count = np.zeros([k + 1, num_classes], dtype=np.float32)
-    counter_count = np.zeros([k + 1, num_classes], dtype=np.float32)
+    count_list, counter_count_list = [], []
+    for k in k_list:
+        count_list.append(np.zeros([k + 1, num_classes], dtype=np.float32))
+        counter_count_list.append(np.zeros([k + 1, num_classes], dtype=np.float32))
 
     with tf.Graph().as_default() as g:
         global_step = tf.Variable(0, trainable=False, dtype=tf.int64, name='global_step')
@@ -391,7 +378,6 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
     sess = tf.Session(graph=g)
-
     sess.run(init_op)
 
     writer = tf.summary.FileWriter(model_dir, graph=sess.graph)
@@ -403,7 +389,7 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     coord = tf.train.Coordinator()
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-    processing_count, num_examples_processed = 0, 0
+    tol_num_examples_processed = 0
 
     try:
 
@@ -414,33 +400,34 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
                 [video_id_batch, video_batch, video_labels_batch])
 
             logging.info('video_id_batch shape: {}, video_batch shape: {}'.format(video_id_batch_val.shape,
-                                                                                   video_batch_val.shape))
+                                                                                  video_batch_val.shape))
 
             # Pass values instead of tensors.
-            topk_video_ids, topk_labels = find_k_nearest_neighbors(video_id_batch_val,
-                                                                   video_batch_val, inner_reader,
-                                                                   data_pattern=train_data_pattern,
-                                                                   k=k)
+            top_max_k_video_ids, top_max_k_labels = find_k_nearest_neighbors(video_id_batch_val,
+                                                                             video_batch_val, inner_reader,
+                                                                             data_pattern=train_data_pattern,
+                                                                             k=max_k)
+            logging.info('Finding k nearest neighbors needs {} s.'.format(time.time() - start_time))
+            # logging.debug('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
 
-            logging.debug('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
-            # Update count and counter_count.
-            # batch_size * delta.
-            logging.debug('Finding k nearest neighbors needs {} s.'.format(time.time() - start_time))
+            # Update count_list and counter_count_list.
+            for idx, k in enumerate(k_list):
+                topk_labels = top_max_k_labels[:, :k]
+                # batch_size * delta.
+                deltas = topk_labels.astype(np.int32).sum(axis=1)
+                # Update count and counter_count for each example.
+                for delta, video_labels_val in zip(deltas, video_labels_batch_val):
+                    inc = video_labels_val.astype(np.float32)
+                    count_list[idx][delta, range_num_classes] += inc
+                    counter_count_list[idx][delta, range_num_classes] += 1 - inc
 
-            deltas = topk_labels.astype(np.int32).sum(axis=1)
-            # Update count and counter_count for each example.
-            for delta, video_labels_val in zip(deltas, video_labels_batch_val):
-                inc = video_labels_val.astype(np.float32)
-                count[delta, range_num_classes] += inc
-                counter_count[delta, range_num_classes] += 1 - inc
-
-            logging.debug('count: {}\ncounter_count: {}'.format(count, counter_count))
+                # logging.debug('count: {}\ncounter_count: {}'.format(count_list[idx], counter_count_list[idx]))
 
             global_step_val, summary = sess.run([global_step_inc_op, summary_op])
             now = time.time()
-            num_examples_processed += video_id_batch_val.shape[0]
+            tol_num_examples_processed += video_id_batch_val.shape[0]
             logging.info('Batch processing step: {}, elapsed: {} s, total number of examples processed: {}'.format(
-                global_step_val, now - start_time, num_examples_processed))
+                global_step_val, now - start_time, tol_num_examples_processed))
 
             writer.add_summary(summary, global_step=global_step_val)
 
@@ -454,33 +441,30 @@ def compute_prior_posterior_prob(k=8, smooth_para=1.0, debug=False):
     coord.join(threads)
     sess.close()
 
-    # Compute posterior probabilities.
-    pos_prob_positive = (smooth_para + count) / (smooth_para * (k + 1) + count.sum(axis=0))
-    pos_prob_negative = (smooth_para + counter_count) / (smooth_para * (k + 1) + counter_count.sum(axis=0))
+    for k, count, counter_count in zip(k_list, count_list, counter_count_list):
+        # Compute posterior probabilities.
+        pos_prob_positive = (smooth_para + count) / (smooth_para * (k + 1) + count.sum(axis=0))
+        pos_prob_negative = (smooth_para + counter_count) / (smooth_para * (k + 1) + counter_count.sum(axis=0))
 
-    # Write to files for future use.
-    store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, model_dir)
+        # Write to files for future use.
+        store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, model_dir)
 
 
-def make_predictions(out_file_location, top_k, k=8, debug=False):
+def make_predictions(out_file_location, top_k=20, k=8):
     """
 
     :param out_file_location: The file to which predictions should be written to. Supports gcloud file.
     :param top_k: See FLAGS.top_k.
     :param k: The k in ml-knn.
-    :param debug: If True, make predictions on a single file and find k nearest neighbors from a single file.
     :return:
     """
-    train_data_pattern = '/Users/Sophie/Documents/youtube-8m-data/train/trainaW.tfrecord' \
-        if debug else FLAGS.train_data_pattern
+    train_data_pattern = FLAGS.train_data_pattern
 
-    test_data_pattern = '/Users/Sophie/Documents/youtube-8m-data/test/test4a.tfrecord' \
-        if debug else FLAGS.test_data_pattern
+    test_data_pattern = FLAGS.test_data_pattern
 
     model_dir = FLAGS.model_dir
-    batch_size = 1024 if debug else FLAGS.batch_size
-    # For debug, use a single tfrecord file (debug mode).
-    num_readers = 1 if debug else FLAGS.num_readers
+    batch_size = FLAGS.batch_size
+    num_readers = FLAGS.num_readers
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
     # Load prior and posterior probabilities.
@@ -528,8 +512,7 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
                                                                        data_pattern=train_data_pattern,
                                                                        k=k)
 
-                if debug:
-                    print('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
+                logging.debug('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
 
                 # batch_size * delta.
                 deltas = topk_labels.astype(np.int32).sum(axis=1)
@@ -547,9 +530,6 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
                 for line in format_lines(video_id_batch_val, batch_predictions_prob, top_k):
                     out_file.write(line)
                 out_file.flush()
-
-                if debug:
-                    coord.request_stop()
 
                 now = time.time()
                 processing_count += 1
@@ -571,22 +551,21 @@ def make_predictions(out_file_location, top_k, k=8, debug=False):
 
 
 def main(unused_argv):
-    is_train = FLAGS.is_train
-    is_tuning_hyper_para = FLAGS.is_tuning_hyper_para
-    is_debug = FLAGS.is_debug
-    output_file = FLAGS.output_file
-    top_k = FLAGS.top_k
-
     logging.set_verbosity(logging.INFO)
 
+    is_train = FLAGS.is_train
+
     if is_train:
-        if is_tuning_hyper_para:
-            # TODO, implement.
-            raise NotImplementedError('Implementation is under progress.')
-        else:
-            compute_prior_posterior_prob(debug=is_debug)
+        ks = FLAGS.ks
+        k_list = [int(k.strip()) for k in ks.split(',')]
+
+        compute_prior_posterior_prob(k_list=k_list)
     else:
-        make_predictions(output_file, top_k, debug=is_debug)
+        output_file = FLAGS.output_file
+        top_k = FLAGS.top_k
+        pred_k = FLAGS.pred_k
+
+        make_predictions(output_file, top_k=top_k, k=pred_k)
 
 
 if __name__ == '__main__':
@@ -595,7 +574,7 @@ if __name__ == '__main__':
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
                         '/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord',
-                        'File glob for the training dataset.')
+                        'File glob for the training data set.')
 
     flags.DEFINE_string('validate_data_pattern',
                         '/Users/Sophie/Documents/youtube-8m-data/validate/validateo*.tfrecord',
@@ -605,23 +584,25 @@ if __name__ == '__main__':
                         '/Users/Sophie/Documents/youtube-8m-data/test/test4*.tfrecord',
                         'Test data pattern, to be specified when making predictions.')
 
-    flags.DEFINE_string('feature_names', 'mean_rgb,mean_audio', 'Features to be used, separated by ,.')
-    flags.DEFINE_string('feature_sizes', '1024,128', 'Dimensions of features to be used, separated by ,.')
+    # mean_rgb,mean_audio
+    flags.DEFINE_string('feature_names', 'mean_audio', 'Features to be used, separated by ,.')
+    # 1024, 128
+    flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
 
-    # Set by the memory limit (52GB).
-    flags.DEFINE_integer('batch_size', 40960, 'Size of batch processing.')
-    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
+    # Set by the memory limit. Larger values will reduce data passing times. For debug, use a small value, e.g., 1024.
+    flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
+    # For debug, use a single reader.
+    flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
+
+    # Separated by ,.
+    flags.DEFINE_string('ks', '1, 3, 8, 16, 32, 50', 'k nearest neighbors to tune.')
+
+    flags.DEFINE_integer('pred_k', 8, 'The k nearest neighbor to make predictions.')
 
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
 
     flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
-
-    flags.DEFINE_boolean('is_tuning_hyper_para', False,
-                         'Boolean variable indicating whether to perform hyper-parameter tuning.')
-
-    # TODO, change it.
-    flags.DEFINE_boolean('is_debug', False, 'Boolean variable to indicate debug or not.')
 
     flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
