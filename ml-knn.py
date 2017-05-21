@@ -194,7 +194,10 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_trai
         return None, final_topk_labels
 
 
-def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
+def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=False):
+    if (not opt_hyper_para) and (len(k_list) != 1):
+        raise ValueError('Only one k is needed. Check your argument.')
+
     model_dir = FLAGS.model_dir
 
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
@@ -319,21 +322,22 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
         save_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, model_dir)
 
     # Output the best k in validate set.
-    validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
-                                          batch_size=batch_size, num_readers=num_readers)
-    validate_ids, validate_data, validate_labels, _ = random_sample(0.1, mask=(True, True, True, False),
-                                                                    data_pipeline=validate_data_pipeline)
-    best_k = None
-    best_validate_gap = np.NINF
-    for k in k_list:
-        pred_obj = Predict(train_data_pipeline, model_dir, k=k)
-        predictions = pred_obj.make_batch_predictions(validate_ids, validate_data)
-        validate_gap = calculate_gap(predictions, validate_labels)
-        logging.info('k: {}, validate gap: {}'.format(k, validate_gap))
-        if validate_gap > best_validate_gap:
-            best_k = k
-            best_validate_gap = validate_gap
-    print('Best k: {}, with validate gap {}'.format(best_k, best_validate_gap))
+    if opt_hyper_para:
+        validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
+                                              batch_size=batch_size, num_readers=num_readers)
+        validate_ids, validate_data, validate_labels, _ = random_sample(0.1, mask=(True, True, True, False),
+                                                                        data_pipeline=validate_data_pipeline)
+        best_k = None
+        best_validate_gap = np.NINF
+        for k in k_list:
+            pred_obj = Predict(train_data_pipeline, model_dir, k=k)
+            predictions = pred_obj.make_batch_predictions(validate_ids, validate_data)
+            validate_gap = calculate_gap(predictions, validate_labels)
+            logging.info('k: {}, validate gap: {}'.format(k, validate_gap))
+            if validate_gap > best_validate_gap:
+                best_k = k
+                best_validate_gap = validate_gap
+        print('Best k: {}, with validate gap {}'.format(best_k, best_validate_gap))
 
 
 class Predict(object):
@@ -450,12 +454,13 @@ def main(unused_argv):
     logging.set_verbosity(logging.INFO)
 
     is_train = FLAGS.is_train
+    is_tuning_hyper_para = FLAGS.is_tuning_hyper_para
 
     if is_train:
         ks = FLAGS.ks
         k_list = [int(k.strip()) for k in ks.split(',')]
 
-        compute_prior_posterior_prob(k_list=k_list)
+        compute_prior_posterior_prob(k_list=k_list, opt_hyper_para=is_tuning_hyper_para)
     else:
         model_dir = FLAGS.model_dir
         k = FLAGS.pred_k
@@ -508,6 +513,11 @@ if __name__ == '__main__':
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
     # For debug, use a single reader.
     flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
+
+    # To find the best k in validate set, set it as True.
+    # After getting the best k, setting this as False when using train and validate set to re-train the model.
+    flags.DEFINE_boolean('is_tuning_hyper_para', False,
+                         'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
     # Separated by ,.
     flags.DEFINE_string('ks', '1, 3, 8, 16, 32, 50', 'k nearest neighbors to tune.')
