@@ -221,6 +221,95 @@ def load_features_mean_var(reader):
     return mean, var
 
 
+def save_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder=''):
+    # Create the directory if it does not exist.
+    if not tf.gfile.Exists(folder):
+        try:
+            tf.gfile.MakeDirs(folder)
+        except tf.errors.OpError:
+            logging.error("Failed to create dir {}. Please manually create it.".format(folder))
+
+    with open(path_join(folder, 'sum_labels.pickle'), 'wb') as pickle_file:
+        pickle.dump(sum_labels, pickle_file)
+
+    with open(path_join(folder, 'accum_num_videos.pickle'), 'wb') as pickle_file:
+        pickle.dump(accum_num_videos, pickle_file)
+
+    with open(path_join(folder, 'labels_prior_prob.pickle'), 'wb') as pickle_file:
+        pickle.dump(labels_prior_prob, pickle_file)
+
+
+def restore_prior_prob(folder=''):
+    with open(path_join(folder, 'sum_labels.pickle'), 'rb') as pickle_file:
+        try:
+            sum_labels = pickle.load(pickle_file)
+        except:
+            sum_labels = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
+
+    with open(path_join(folder, 'accum_num_videos.pickle'), 'rb') as pickle_file:
+        try:
+            accum_num_videos = pickle.load(pickle_file)
+        except:
+            accum_num_videos = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
+
+    with open(path_join(folder, 'labels_prior_prob.pickle'), 'rb') as pickle_file:
+        try:
+            labels_prior_prob = pickle.load(pickle_file)
+        except:
+            labels_prior_prob = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
+
+    return sum_labels, accum_num_videos, labels_prior_prob
+
+
+def save_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, folder=''):
+    # Create the directory if it does not exist.
+    if not tf.gfile.Exists(folder):
+        try:
+            tf.gfile.MakeDirs(folder)
+        except tf.errors.OpError:
+            logging.error("Failed to create dir {}. Please manually create it.".format(folder))
+
+    with open(path_join(folder, 'count_{}.pickle'.format(k)), 'wb') as pickle_file:
+        pickle.dump(count, pickle_file)
+
+    with open(path_join(folder, 'counter_count_{}.pickle'.format(k)), 'wb') as pickle_file:
+        pickle.dump(counter_count, pickle_file)
+
+    with open(path_join(folder, 'pos_prob_positive_{}.pickle'.format(k)), 'wb') as pickle_file:
+        pickle.dump(pos_prob_positive, pickle_file)
+
+    with open(path_join(folder, 'pos_prob_negative_{}.pickle'.format(k)), 'wb') as pickle_file:
+        pickle.dump(pos_prob_negative, pickle_file)
+
+
+def restore_posterior_prob(k, folder=''):
+    with open(path_join(folder, 'count_{}.pickle'.format(k)), 'rb') as pickle_file:
+        try:
+            count = pickle.load(pickle_file)
+        except:
+            count = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
+
+    with open(path_join(folder, 'counter_count_{}.pickle'.format(k)), 'rb') as pickle_file:
+        try:
+            counter_count = pickle.load(pickle_file)
+        except:
+            counter_count = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
+
+    with open(path_join(folder, 'pos_prob_positive_{}.pickle'.format(k)), 'rb') as pickle_file:
+        try:
+            pos_prob_positive = pickle.load(pickle_file)
+        except:
+            pos_prob_positive = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
+
+    with open(path_join(folder, 'pos_prob_negative_{}.pickle'.format(k)), 'rb') as pickle_file:
+        try:
+            pos_prob_negative = pickle.load(pickle_file)
+        except:
+            pos_prob_negative = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
+
+    return count, counter_count, pos_prob_positive, pos_prob_negative
+
+
 DataPipeline = namedtuple('DataPipeline', ['reader', 'data_pattern', 'batch_size', 'num_readers'])
 
 
@@ -245,6 +334,8 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
 
     if (len(mask) != 4) or all(not e for e in mask):
         raise ValueError('Invalid mask argument, require a tuple with exactly 4 boolean values and at least one True.')
+
+    logging.info('Enter random_sample...')
 
     # Create the graph to traverse all data once.
     with tf.Graph().as_default() as graph:

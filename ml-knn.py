@@ -9,78 +9,31 @@ import numpy as np
 from readers import get_reader
 from tensorflow import flags, gfile, logging, app
 from inference import format_lines
+from utils import DataPipeline, get_input_data_tensors
+from utils import save_prior_prob, save_posterior_prob, restore_prior_prob, restore_posterior_prob
 
-import pickle
 import time
-from os.path import join as path_join
 
 FLAGS = flags.FLAGS
 
 
-def get_input_data_tensors(reader, data_pattern, batch_size, num_readers=1, num_epochs=1, name_scope='input'):
-    """Creates the section of the graph which reads the input data.
-
-    Similar to the same-name function in train.py.
-    Args:
-        reader: A class which parses the input data.
-        data_pattern: A 'glob' style path to the data files.
-        batch_size: How many examples to process at a time.
-        num_readers: How many I/O threads to use.
-        num_epochs: How many passed to go through the data files.
-        name_scope: An identifier of this code.
-
-    Returns:
-        A tuple containing the features tensor, labels tensor, and optionally a
-        tensor containing the number of frames per video. The exact dimensions
-        depend on the reader being used.
-
-    Raises:
-        IOError: If no files matching the given pattern were found.
-    """
-    # Adapted from namesake function in inference.py.
-    with tf.name_scope(name_scope):
-        # Glob() can be replace with tf.train.match_filenames_once(), which is an operation.
-        files = gfile.Glob(data_pattern)
-        if not files:
-            raise IOError("Unable to find input files. data_pattern='{}'".format(data_pattern))
-        logging.info("Number of input files: {}".format(len(files)))
-        # Pass test data once. Thus, num_epochs is set as 1.
-        filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=False)
-        examples_and_labels = [reader.prepare_reader(filename_queue) for _ in range(num_readers)]
-
-        # In shuffle_batch_join,
-        # capacity must be larger than min_after_dequeue and the amount larger
-        #   determines the maximum we will prefetch.  Recommendation:
-        #   min_after_dequeue + (num_threads + a small safety margin) * batch_size
-        capacity = num_readers * batch_size + 1024
-        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            tf.train.batch_join(examples_and_labels,
-                                batch_size=batch_size,
-                                capacity=capacity,
-                                allow_smaller_final_batch=True,
-                                enqueue_many=True))
-        return video_id_batch, video_batch, video_labels_batch, num_frames_batch
-
-
-def compute_prior_prob(reader, data_pattern, smooth_para=1.0):
+def compute_prior_prob(data_pipeline, smooth_para=1.0):
     """
     Compute prior probabilities for future use in ml-knn.
-    :param reader:
-    :param data_pattern:
+    :param data_pipeline:
     :param smooth_para:
     :return: (total number of labels per label, total number of videos processed, prior probabilities)
     """
-    batch_size = FLAGS.batch_size
-    num_readers = FLAGS.num_readers
+    reader = data_pipeline.reader
     num_classes = reader.num_classes
 
     with tf.Graph().as_default() as g:
         sum_labels_onehot = tf.Variable(tf.zeros([num_classes]))
         total_num_videos = tf.Variable(0, dtype=tf.float32)
 
-        # Generate example queue. Traverse the queue to traverse the dataset.
+        # Generate example queue. Traverse the queue to traverse the data set.
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-            reader=reader, data_pattern=data_pattern, batch_size=batch_size, num_readers=num_readers, num_epochs=1)
+            data_pipeline, num_epochs=1, name_scope='prior_prob_input')
 
         sum_labels_onehot_op = sum_labels_onehot.assign_add(
             tf.reduce_sum(tf.cast(video_labels_batch, tf.float32), axis=0))
@@ -123,22 +76,20 @@ def compute_prior_prob(reader, data_pattern, smooth_para=1.0):
     return sum_labels_val, total_num_videos_val, labels_prior_prob_val
 
 
-def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, batch_size=2048, num_readers=1, k=8):
+def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_train, k=8):
     """
     Return k-nearest neighbors. https://www.tensorflow.org/programmers_guide/reading_data.
 
     :param video_id_batch: Must be a value.
     :param video_batch: Must be a numpy array.
-    :param reader:
-    :param data_pattern:
-    :param batch_size:
-    :param num_readers:
+    :param data_pipeline:
+    :param is_train: If True, exclude the most similar example (itself). 
     :param k: int.
     :return: k-nearest videos, representing by (video_ids, video_labels)
     """
     num_videos = video_batch.shape[0]
+    reader = data_pipeline.reader
     num_classes = reader.num_classes
-    is_train = FLAGS.is_train
 
     # If training, k = k + 1, to avoid the video itself. Otherwise, not necessary.
     _k = int(k)
@@ -163,9 +114,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         # Generate example queue. Traverse the queue to traverse the data set.
         # Works as the inner loop of finding k-nearest neighbors.
         video_id_batch_inner, video_batch_inner, video_labels_batch_inner, num_frames_batch_inner = (
-            get_input_data_tensors(
-                reader=reader, data_pattern=data_pattern, batch_size=batch_size,
-                num_readers=num_readers, num_epochs=1, name_scope='inner_loop'))
+            get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='inner_loop'))
 
         # normalization along the last dimension.
         video_batch_inner_normalized = tf.nn.l2_normalize(video_batch_inner, dim=-1,
@@ -244,110 +193,24 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, reader, data_pattern, 
         return None, final_topk_labels
 
 
-def store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, folder=''):
-    # Create the directory if it does not exist.
-    if not tf.gfile.Exists(folder):
-        try:
-            tf.gfile.MakeDirs(folder)
-        except tf.errors.OpError:
-            logging.error("Failed to create dir {}. Please manually create it.".format(folder))
-
-    with open(path_join(folder, 'sum_labels.pickle'), 'wb') as pickle_file:
-        pickle.dump(sum_labels, pickle_file)
-
-    with open(path_join(folder, 'accum_num_videos.pickle'), 'wb') as pickle_file:
-        pickle.dump(accum_num_videos, pickle_file)
-
-    with open(path_join(folder, 'labels_prior_prob.pickle'), 'wb') as pickle_file:
-        pickle.dump(labels_prior_prob, pickle_file)
-
-
-def recover_prior_prob(folder=''):
-    with open(path_join(folder, 'sum_labels.pickle'), 'rb') as pickle_file:
-        try:
-            sum_labels = pickle.load(pickle_file)
-        except:
-            sum_labels = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
-
-    with open(path_join(folder, 'accum_num_videos.pickle'), 'rb') as pickle_file:
-        try:
-            accum_num_videos = pickle.load(pickle_file)
-        except:
-            accum_num_videos = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
-
-    with open(path_join(folder, 'labels_prior_prob.pickle'), 'rb') as pickle_file:
-        try:
-            labels_prior_prob = pickle.load(pickle_file)
-        except:
-            labels_prior_prob = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
-
-    return sum_labels, accum_num_videos, labels_prior_prob
-
-
-def store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, folder=''):
-    # Create the directory if it does not exist.
-    if not tf.gfile.Exists(folder):
-        try:
-            tf.gfile.MakeDirs(folder)
-        except tf.errors.OpError:
-            logging.error("Failed to create dir {}. Please manually create it.".format(folder))
-
-    with open(path_join(folder, 'count_{}.pickle'.format(k)), 'wb') as pickle_file:
-        pickle.dump(count, pickle_file)
-
-    with open(path_join(folder, 'counter_count_{}.pickle'.format(k)), 'wb') as pickle_file:
-        pickle.dump(counter_count, pickle_file)
-
-    with open(path_join(folder, 'pos_prob_positive_{}.pickle'.format(k)), 'wb') as pickle_file:
-        pickle.dump(pos_prob_positive, pickle_file)
-
-    with open(path_join(folder, 'pos_prob_negative_{}.pickle'.format(k)), 'wb') as pickle_file:
-        pickle.dump(pos_prob_negative, pickle_file)
-
-
-def recover_posterior_prob(k, folder=''):
-    with open(path_join(folder, 'count_{}.pickle'.format(k)), 'rb') as pickle_file:
-        try:
-            count = pickle.load(pickle_file)
-        except:
-            count = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
-
-    with open(path_join(folder, 'counter_count_{}.pickle'.format(k)), 'rb') as pickle_file:
-        try:
-            counter_count = pickle.load(pickle_file)
-        except:
-            counter_count = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
-
-    with open(path_join(folder, 'pos_prob_positive_{}.pickle'.format(k)), 'rb') as pickle_file:
-        try:
-            pos_prob_positive = pickle.load(pickle_file)
-        except:
-            pos_prob_positive = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
-
-    with open(path_join(folder, 'pos_prob_negative_{}.pickle'.format(k)), 'rb') as pickle_file:
-        try:
-            pos_prob_negative = pickle.load(pickle_file)
-        except:
-            pos_prob_negative = pickle.load(pickle_file, fix_imports=True, encoding='latin1')
-
-    return count, counter_count, pos_prob_positive, pos_prob_negative
-
-
 def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
-    train_data_pattern = FLAGS.train_data_pattern
+    model_dir = FLAGS.model_dir
 
+    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
+    reader = get_reader(model_type, feature_names, feature_sizes)
+
+    train_data_pattern = FLAGS.train_data_pattern
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
-    model_dir = FLAGS.model_dir
-    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
-
-    reader = get_reader(model_type, feature_names, feature_sizes)
 
     # Step 1. Compute prior probabilities and store the results.
     start_time = time.time()
-    sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(reader, train_data_pattern, smooth_para)
+
+    train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
+                                       num_readers=num_readers)
+    sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(train_data_pipeline, smooth_para=smooth_para)
     logging.info('Computing prior probability took {} s.'.format(time.time() - start_time))
-    store_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, model_dir)
+    save_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, model_dir)
 
     # Step 2. Compute posterior probabilities, actually likelihood function or sampling distribution.
     # Total number of classes.
@@ -369,7 +232,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
         global_step_inc_op = global_step.assign_add(1)
 
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (get_input_data_tensors(
-            reader, train_data_pattern, batch_size, num_readers=num_readers, num_epochs=1, name_scope='outer_loop'))
+            train_data_pipeline, num_epochs=1, name_scope='outer_loop'))
 
         tf.summary.scalar('global_step', global_step)
 
@@ -401,11 +264,14 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
 
             logging.info('video_id_batch shape: {}, video_batch shape: {}'.format(video_id_batch_val.shape,
                                                                                   video_batch_val.shape))
-
+            # Smaller batch size and less number of readers.
+            _train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern, batch_size=2048,
+                                                num_readers=1)
             # Pass values instead of tensors.
             top_max_k_video_ids, top_max_k_labels = find_k_nearest_neighbors(video_id_batch_val,
-                                                                             video_batch_val, inner_reader,
-                                                                             data_pattern=train_data_pattern,
+                                                                             video_batch_val,
+                                                                             _train_data_pipeline,
+                                                                             is_train=True,
                                                                              k=max_k)
             logging.info('Finding k nearest neighbors needs {} s.'.format(time.time() - start_time))
             # logging.debug('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
@@ -447,7 +313,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
         pos_prob_negative = (smooth_para + counter_count) / (smooth_para * (k + 1) + counter_count.sum(axis=0))
 
         # Write to files for future use.
-        store_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, model_dir)
+        save_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, model_dir)
 
 
 def make_predictions(out_file_location, top_k=20, k=8):
@@ -459,7 +325,6 @@ def make_predictions(out_file_location, top_k=20, k=8):
     :return:
     """
     train_data_pattern = FLAGS.train_data_pattern
-
     test_data_pattern = FLAGS.test_data_pattern
 
     model_dir = FLAGS.model_dir
@@ -468,8 +333,8 @@ def make_predictions(out_file_location, top_k=20, k=8):
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
 
     # Load prior and posterior probabilities.
-    sum_labels, accum_num_videos, labels_prior_prob = recover_prior_prob(folder=model_dir)
-    count, counter_count, pos_prob_positive, pos_prob_negative = recover_posterior_prob(k, folder=model_dir)
+    sum_labels, accum_num_videos, labels_prior_prob = restore_prior_prob(folder=model_dir)
+    count, counter_count, pos_prob_positive, pos_prob_negative = restore_posterior_prob(k, folder=model_dir)
 
     # Make batch predictions.
     reader = get_reader(model_type, feature_names, feature_sizes)
@@ -479,9 +344,12 @@ def make_predictions(out_file_location, top_k=20, k=8):
     num_classes = reader.num_classes
     range_num_classes = range(num_classes)
 
+    test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern, batch_size=batch_size,
+                                      num_readers=num_readers)
+
     with tf.Graph().as_default() as g:
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-            reader, test_data_pattern, batch_size, num_readers=num_readers, num_epochs=1)
+            test_data_pipeline, num_epochs=1)
 
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
@@ -507,10 +375,11 @@ def make_predictions(out_file_location, top_k=20, k=8):
                 logging.debug('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
 
                 # Pass values instead of tensors.
+                train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern,
+                                                   batch_size=2048, num_readers=1)
                 topk_video_ids, topk_labels = find_k_nearest_neighbors(video_id_batch_val,
-                                                                       video_batch_val, inner_reader,
-                                                                       data_pattern=train_data_pattern,
-                                                                       k=k)
+                                                                       video_batch_val, train_data_pipeline,
+                                                                       is_train=False, k=k)
 
                 logging.debug('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
 
@@ -573,7 +442,7 @@ if __name__ == '__main__':
 
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord',
+                        '/Users/Sophie/Documents/youtube-8m-data/train/trainaQ.tfrecord',
                         'File glob for the training data set.')
 
     flags.DEFINE_string('validate_data_pattern',
@@ -602,7 +471,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
 
-    flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
+    flags.DEFINE_boolean('is_train', False, 'Boolean variable to indicate training or test.')
 
     flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
