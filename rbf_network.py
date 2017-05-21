@@ -22,7 +22,7 @@ import tensorflow as tf
 import time
 
 from readers import get_reader
-from utils import get_input_data_tensors, partial_data_features_mean, DataPipeline, random_sample
+from utils import get_input_data_tensors, DataPipeline, random_sample
 from tensorflow import flags, gfile, logging, app
 
 from os.path import join as path_join, dirname

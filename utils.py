@@ -588,7 +588,7 @@ def _get_input_data_tensors(reader=None, data_pattern=None, batch_size=2048, num
         files = gfile.Glob(data_pattern)
         if not files:
             raise IOError("Unable to find input files. data_pattern='{}'".format(data_pattern))
-        logging.info("Number of input files: {}".format(len(files)))
+        logging.info("Number of input files: {} within {}".format(len(files), name_scope))
         # Pass test data once. Thus, num_epochs is set as 1.
         filename_queue = tf.train.string_input_producer(files, num_epochs=num_epochs, shuffle=shuffle, capacity=128)
         examples_and_labels = [reader.prepare_reader(filename_queue) for _ in range(num_readers)]
