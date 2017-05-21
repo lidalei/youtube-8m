@@ -221,11 +221,10 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
 
-    # Step 1. Compute prior probabilities and store the results.
-    start_time = time.time()
-
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
                                        num_readers=num_readers)
+    # Step 1. Compute prior probabilities and store the results.
+    start_time = time.time()
     sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(train_data_pipeline, smooth_para=smooth_para)
     logging.info('Computing prior probability took {} s.'.format(time.time() - start_time))
     save_prior_prob(sum_labels, accum_num_videos, labels_prior_prob, model_dir)
