@@ -174,13 +174,19 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_trai
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
+        count = 0
         try:
             while not coord.should_stop():
 
-                # Run results are numpy arrays. Update topk_sims and tok_video_labels.
-                _, global_step_val, summary = sess.run([update_topk_non_op, global_step, summary_op])
+                if count % 100 == 0:
+                    # Run results are numpy arrays. Update topk_sims and tok_video_labels.
+                    _, global_step_val, summary = sess.run([update_topk_non_op, global_step, summary_op])
 
-                writer.add_summary(summary, global_step=global_step_val)
+                    writer.add_summary(summary, global_step=global_step_val)
+                else:
+                    _ = sess.run(update_topk_non_op)
+
+                count += 1
 
         except tf.errors.OutOfRangeError:
             logging.info('Done the whole data set - found k nearest neighbors.')
