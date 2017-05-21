@@ -292,7 +292,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
             global_step_val, summary = sess.run([global_step_inc_op, summary_op])
             now = time.time()
             tol_num_examples_processed += video_id_batch_val.shape[0]
-            logging.info('Batch processing step: {}, elapsed: {} s, total number of examples processed: {}'.format(
+            logging.info('Batch processing step {}, elapsed {} s, processed {} examples in total'.format(
                 global_step_val, now - start_time, tol_num_examples_processed))
 
             writer.add_summary(summary, global_step=global_step_val)
@@ -316,107 +316,127 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0):
         save_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, model_dir)
 
 
-def make_predictions(out_file_location, top_k=20, k=8):
-    """
+class Predict(object):
+    def __init__(self, output_file_loc, top_k=20, k=8):
+        """
+        :param output_file_loc: The file to which predictions should be written to. Supports gcloud file.
+        :param top_k: See FLAGS.top_k.
+        :param k: The k in ml-knn. 
+        """
+        self.output_file_loc = output_file_loc
+        self.top_k = top_k
+        self.k = k
 
-    :param out_file_location: The file to which predictions should be written to. Supports gcloud file.
-    :param top_k: See FLAGS.top_k.
-    :param k: The k in ml-knn.
-    :return:
-    """
-    train_data_pattern = FLAGS.train_data_pattern
-    test_data_pattern = FLAGS.test_data_pattern
+        test_data_pattern = FLAGS.test_data_pattern
+        train_data_pattern = FLAGS.train_data_pattern
 
-    model_dir = FLAGS.model_dir
-    batch_size = FLAGS.batch_size
-    num_readers = FLAGS.num_readers
-    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
+        model_type = FLAGS.model_type
+        batch_size = FLAGS.batch_size
+        num_readers = FLAGS.num_readers
+        feature_names = FLAGS.feature_names
+        feature_sizes = FLAGS.feature_sizes
 
-    # Load prior and posterior probabilities.
-    sum_labels, accum_num_videos, labels_prior_prob = restore_prior_prob(folder=model_dir)
-    count, counter_count, pos_prob_positive, pos_prob_negative = restore_posterior_prob(k, folder=model_dir)
+        reader = get_reader(model_type, feature_names, feature_sizes)
+        inner_reader = get_reader(model_type, feature_names, feature_sizes)
+        # Total number of classes.
+        num_classes = reader.num_classes
+        self.range_num_classes = range(num_classes)
 
-    # Make batch predictions.
-    reader = get_reader(model_type, feature_names, feature_sizes)
-    inner_reader = get_reader(model_type, feature_names, feature_sizes)
+        self.test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern,
+                                               batch_size=batch_size, num_readers=num_readers)
 
-    # Total number of classes.
-    num_classes = reader.num_classes
-    range_num_classes = range(num_classes)
+        self.train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern,
+                                                batch_size=2048, num_readers=1)
 
-    test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern, batch_size=batch_size,
-                                      num_readers=num_readers)
+        # Load prior and posterior probabilities.
+        model_dir = FLAGS.model_dir
+        self.sum_labels, self.accum_num_videos, self.labels_prior_prob = restore_prior_prob(folder=model_dir)
+        self.count, self.counter_count, self.pos_prob_positive, self.pos_prob_negative = restore_posterior_prob(
+            self.k, folder=model_dir)
 
-    with tf.Graph().as_default() as g:
-        video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
-            test_data_pipeline, num_epochs=1)
+    def make_batch_predictions(self, video_id_batch_val, video_batch_val):
+        """
+        Make predictions for a batch of videos.
+        """
+        topk_video_ids, topk_labels = find_k_nearest_neighbors(video_id_batch_val,
+                                                               video_batch_val, self.train_data_pipeline,
+                                                               is_train=False, k=self.k)
 
-        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+        logging.debug('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
 
-    with tf.Session(graph=g) as sess, gfile.Open(out_file_location, "w+") as out_file:
-        sess.run(init_op)
+        # batch_size * delta.
+        deltas = topk_labels.astype(np.int32).sum(axis=1)
 
-        # Be cautious to not be blocked by queue.
-        # Start input enqueue threads.
-        coord = tf.train.Coordinator()
-        threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+        batch_predictions_prob = []
+        for delta in deltas:
+            positive_prob_numerator = np.multiply(self.labels_prior_prob,
+                                                  self.pos_prob_positive[delta, self.range_num_classes])
+            negative_prob_numerator = np.multiply(1.0 - self.labels_prior_prob,
+                                                  self.pos_prob_negative[delta, self.range_num_classes])
+            # predictions = positive_prob_numerator > negative_prob_numerator
 
-        processing_count, num_examples_processed = 0, 0
-        out_file.write("VideoId,LabelConfidencePairs\n")
+            batch_predictions_prob.append(
+                np.true_divide(positive_prob_numerator, positive_prob_numerator + negative_prob_numerator))
 
-        try:
+        return batch_predictions_prob
 
-            while not coord.should_stop():
-                # Run training steps or whatever.
-                start_time = time.time()
-                video_id_batch_val, video_batch_val = sess.run(
-                    [video_id_batch, video_batch])
+    def make_predictions(self):
+        """
+        Make predictions.
+        """
+        with tf.Graph().as_default() as g:
+            video_id_batch, video_batch, video_labels_batch, num_frames_batch = get_input_data_tensors(
+                self.test_data_pipeline, num_epochs=1)
 
-                logging.debug('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
+            init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
-                # Pass values instead of tensors.
-                train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern,
-                                                   batch_size=2048, num_readers=1)
-                topk_video_ids, topk_labels = find_k_nearest_neighbors(video_id_batch_val,
-                                                                       video_batch_val, train_data_pipeline,
-                                                                       is_train=False, k=k)
+        with tf.Session(graph=g) as sess, gfile.Open(self.output_file_loc, "w+") as out_file:
+            sess.run(init_op)
 
-                logging.debug('topk_video_ids: {}\ntopk_labels: {}'.format(topk_video_ids, topk_labels))
+            # Be cautious to not be blocked by queue.
+            # Start input enqueue threads.
+            coord = tf.train.Coordinator()
+            threads = tf.train.start_queue_runners(sess=sess, coord=coord)
 
-                # batch_size * delta.
-                deltas = topk_labels.astype(np.int32).sum(axis=1)
+            processing_count, num_examples_processed = 0, 0
+            out_file.write("VideoId,LabelConfidencePairs\n")
 
-                batch_predictions_prob = []
-                for delta in deltas:
-                    positive_prob_numerator = labels_prior_prob * pos_prob_positive[delta, range_num_classes]
-                    negative_prob_numerator = (1.0 - labels_prior_prob) * pos_prob_negative[delta, range_num_classes]
-                    # predictions = positive_prob_numerator > negative_prob_numerator
+            try:
 
-                    batch_predictions_prob.append(
-                        positive_prob_numerator / (positive_prob_numerator + negative_prob_numerator))
+                while not coord.should_stop():
+                    # Run training steps or whatever.
+                    start_time = time.time()
+                    video_id_batch_val, video_batch_val = sess.run(
+                        [video_id_batch, video_batch])
 
-                # Write batch predictions to files.
-                for line in format_lines(video_id_batch_val, batch_predictions_prob, top_k):
-                    out_file.write(line)
-                out_file.flush()
+                    logging.debug(
+                        'video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
 
-                now = time.time()
-                processing_count += 1
-                num_examples_processed += video_id_batch_val.shape[0]
-                print('Batch processing step: {}, elapsed seconds: {}, total number of examples processed: {}'.format(
-                    processing_count, now - start_time, num_examples_processed))
+                    # Pass values instead of tensors.
+                    batch_predictions_prob = self.make_batch_predictions(video_id_batch_val, video_batch_val)
 
-        except tf.errors.OutOfRangeError:
-            logging.info('Done with inference. The predictions were written to {}'.format(out_file_location))
-        finally:
-            # When done, ask the threads to stop.
-            coord.request_stop()
+                    # Write batch predictions to files.
+                    for line in format_lines(video_id_batch_val, batch_predictions_prob, self.top_k):
+                        out_file.write(line)
+                    out_file.flush()
 
-        # Wait for threads to finish.
-        coord.join(threads)
+                    now = time.time()
+                    processing_count += 1
+                    num_examples_processed += video_id_batch_val.shape[0]
+                    print('Batch processing step {}, elapsed {} seconds, processed {} examples in total'.format(
+                        processing_count, now - start_time, num_examples_processed))
 
-        sess.close()
-        out_file.close()
+            except tf.errors.OutOfRangeError:
+                logging.info('Done with inference. The predictions were written to {}'.format(self.output_file_loc))
+            finally:
+                # When done, ask the threads to stop.
+                coord.request_stop()
+
+            # Wait for threads to finish.
+            coord.join(threads)
+
+            sess.close()
+            out_file.close()
 
 
 def main(unused_argv):
@@ -434,7 +454,8 @@ def main(unused_argv):
         top_k = FLAGS.top_k
         pred_k = FLAGS.pred_k
 
-        make_predictions(output_file, top_k=top_k, k=pred_k)
+        pred_obj = Predict(output_file, top_k=top_k, k=pred_k)
+        pred_obj.make_predictions()
 
 
 if __name__ == '__main__':
@@ -471,7 +492,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
 
-    flags.DEFINE_boolean('is_train', False, 'Boolean variable to indicate training or test.')
+    flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
 
     flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 
