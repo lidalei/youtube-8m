@@ -218,12 +218,12 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
     reader = get_reader(model_type, feature_names, feature_sizes)
 
     train_data_pattern = FLAGS.train_data_pattern
-    validate_data_pattern = FLAGS.validate_data_pattern
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
 
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
                                        num_readers=num_readers)
+    
     # Step 1. Compute prior probabilities and store the results.
     start_time = time.time()
     sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(train_data_pipeline, smooth_para=smooth_para)
@@ -335,6 +335,8 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
 
     # Output the best k in validate set.
     if opt_hyper_para:
+        validate_data_pattern = FLAGS.validate_data_pattern
+
         validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
                                               batch_size=batch_size, num_readers=num_readers)
         validate_ids, validate_data, validate_labels, _ = random_sample(0.1, mask=(True, True, True, False),
@@ -343,8 +345,27 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
         best_validate_gap = np.NINF
         for k in k_list:
             pred_obj = Predict(train_data_pipeline, model_dir, k=k)
-            predictions = pred_obj.make_batch_predictions(validate_ids, validate_data)
-            validate_gap = calculate_gap(predictions, validate_labels)
+            num_validate_videos = validate_data.shape[0]
+            if num_validate_videos >= 51200:
+                one_third = num_validate_videos / 3
+                two_third = num_validate_videos * 2 / 3
+                predictions_1 = pred_obj.make_batch_predictions(validate_ids[:one_third],
+                                                                validate_data[:one_third])
+                validate_gap_1 = calculate_gap(predictions_1, validate_labels[:one_third])
+
+                predictions_2 = pred_obj.make_batch_predictions(validate_ids[one_third:two_third],
+                                                                validate_data[one_third:two_third])
+                validate_gap_2 = calculate_gap(predictions_2, validate_labels[one_third:two_third])
+
+                predictions_3 = pred_obj.make_batch_predictions(validate_ids[two_third:],
+                                                                validate_data[two_third:])
+                validate_gap_3 = calculate_gap(predictions_3, validate_labels[two_third:])
+
+                validate_gap = (validate_gap_1 + validate_gap_2 + validate_gap_3) / 3.0
+            else:
+                predictions = pred_obj.make_batch_predictions(validate_ids, validate_data)
+                validate_gap = calculate_gap(predictions, validate_labels)
+
             logging.info('k: {}, validate gap: {}'.format(k, validate_gap))
             if validate_gap > best_validate_gap:
                 best_k = k
