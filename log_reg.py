@@ -188,7 +188,16 @@ def inference(train_model_dirs_list):
 
                 batch_predictions_prob_list = []
                 for sess, video_input_batch, pred_prob in zip(sess_list, video_input_batch_list, pred_prob_list):
-                    batch_predictions_prob = sess.run(pred_prob, feed_dict={video_input_batch: video_batch_val})
+                    feature_shape = video_id_batch.get_shape()[-1]
+                    if feature_shape == 128:
+                        _video_batch = video_batch_val[:, -128:]
+                    elif feature_shape == 1024:
+                        _video_batch = video_batch_val[:, :1024]
+                    else:
+                        _video_batch = video_batch_val
+
+                    batch_predictions_prob = sess.run(pred_prob, feed_dict={
+                        video_input_batch: _video_batch})
                     batch_predictions_prob_list.append(batch_predictions_prob)
 
                 batch_predictions_mean_prob = np.mean(np.stack(batch_predictions_prob_list, axis=0), axis=0)
