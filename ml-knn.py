@@ -223,7 +223,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
 
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern, batch_size=batch_size,
                                        num_readers=num_readers)
-    
+
     # Step 1. Compute prior probabilities and store the results.
     start_time = time.time()
     sum_labels, accum_num_videos, labels_prior_prob = compute_prior_prob(train_data_pipeline, smooth_para=smooth_para)
@@ -286,7 +286,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
                                                                                   video_batch_val.shape))
             # Smaller batch size and less number of readers.
             _train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern,
-                                                batch_size=10240, num_readers=3)
+                                                batch_size=batch_size, num_readers=num_readers)
             # Pass values instead of tensors.
             top_max_k_video_ids, top_max_k_labels = find_k_nearest_neighbors(video_id_batch_val,
                                                                              video_batch_val,
@@ -515,7 +515,7 @@ def main(unused_argv):
         train_data_pattern = FLAGS.train_data_pattern
         inner_reader = get_reader(model_type, feature_names, feature_sizes)
         train_data_pipeline = DataPipeline(reader=inner_reader, data_pattern=train_data_pattern,
-                                           batch_size=10240, num_readers=3)
+                                           batch_size=batch_size, num_readers=num_readers)
 
         pred_obj = Predict(train_data_pipeline, model_dir, k=k)
         pred_obj.make_predictions(test_data_pipeline, output_file, top_k=top_k)
@@ -543,9 +543,9 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
 
     # Set by the memory limit. Larger values will reduce data passing times. For debug, use a small value, e.g., 1024.
-    flags.DEFINE_integer('batch_size', 40960, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 20480, 'Size of batch processing.')
     # For debug, use a single reader.
-    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
+    flags.DEFINE_integer('num_readers', 3, 'Number of readers to form a batch.')
 
     # To find the best k in validate set, set it as True.
     # After getting the best k, setting this as False when using train and validate set to re-train the model.
@@ -553,9 +553,9 @@ if __name__ == '__main__':
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
 
     # Separated by ,.
-    flags.DEFINE_string('ks', '1, 3, 8, 12, 16', 'k nearest neighbors to tune.')
+    flags.DEFINE_string('ks', '16', 'k nearest neighbors to tune.')
 
-    flags.DEFINE_integer('pred_k', 8, 'The k nearest neighbor to make predictions.')
+    flags.DEFINE_integer('pred_k', 16, 'The k nearest neighbor to make predictions.')
 
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
