@@ -8,8 +8,8 @@ Zhang M L. ML-RBF: RBF neural networks for multi-label learning[J]. Neural Proce
 In this implementation, training process is split as three phases as described in Schwenker's. Moreover, different
  second-phases are compared and a third phased is added or not.
 
-More specifically, three different frameworks are implemented. 1, for all L labels, finding a certain number of centers
- and train L binary logistic regression models on these centers. 2, for each label, finding a certain number of centers
+More specifically, three different frameworks are implemented. 1, for all L labels, finding a number of centers
+ and train L binary logistic regression models on these centers. 2, for each label, finding a number of centers
  and train a logistic regression model on these centers. In total, there are L groups of centers and L logistic
  regression models. 3, for each label, finding a certain number of centers and train L logistic regression models on
  all these centers as a whole group. The first framework is described in Schwenker's as multi-class classification.
@@ -21,6 +21,7 @@ Second layer, logistic regression to learn classifiers, including tuning feature
 import tensorflow as tf
 import time
 
+from linear_model import LinearClassifier, LogisticRegression
 from readers import get_reader
 from utils import get_input_data_tensors, DataPipeline, random_sample
 from tensorflow import flags, gfile, logging, app
@@ -295,9 +296,7 @@ def mini_batch_kmeans():
 def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosine',
                max_iter=100, tol=0.01, scaling_method=1, alpha=0.1, p=3):
     """
-    This functions implements the following two phases:
-    1. To initialize representative prototypes (RBF centers) c and scaling factors sigma.
-    2. And to fit output weights.
+    This functions initializes representative prototypes (RBF centers) c and scaling factors sigma.
 
     This function will generate one group of centers for all labels as a whole. Be cautious with initialize_per_label.
     Args:
@@ -308,21 +307,25 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
             data_pattern, File Glob of data set.
             batch_size, How many examples to handle per time.
             num_readers, How many IO threads to prefetch examples.
-        method: The method to decide the centers. Possible choices are random selection, kmeans and online(kmeans).
+        method: The method to decide the centers. Possible choices are random selection, kmeans and online (kmeans).
          Default is None, which represents randomly selecting a certain number of examples as centers.
         metric: Distance metric, euclidean distance or cosine distance.
         max_iter: The maximal number of iterations clustering to be done.
         tol: The minimal reduction of objective function of clustering to be reached to stop iteration.
         scaling_method: There are four choices. 1, all of them use the same sigma, the p smallest pairs of distances.
-         2, average of p nearest centers. 3, distance to the nearest center that has a different label (Not supported!).
+         2, average of p nearest centers.
+         3, distance to the nearest center that has a different label (Not supported!).
          4, mean distance between this center and all of its points.
-        alpha: The alpha parameter that should be set heuristically. It works like a learning rate. (mu in Zhang's)
+        alpha: The alpha parameter that should be set heuristically. It works like a learning rate. (mu in Zhang)
         p: When scaling_method is 1 or 2, p is needed.
     Returns:
         centers (prototypes) and scaling factors (sigmas).
     Raises:
         ValueError if num_centers_ratio is not between 0.0 (open) and 1.0 (closed).
-        NotImplementedError if metric is not euclidean or cosine.
+        ValueError if metric is not euclidean or cosine.
+        ValueError if method is not one of None, kmeans or online.
+        NotImplementedError if scaling_method is 3 or 5.
+        ValueError if scaling method is not 1 - 5.
     """
     logging.info('Generate a group of centers for all labels. See Schwenker.')
     # Argument checking.
@@ -333,33 +336,34 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
     if ('euclidean' == metric) or ('cosine' == metric):
         logging.info('Using {} distance. The larger, the less similar.'.format(metric))
     else:
-        raise NotImplementedError('Only euclidean and cosine distance are supported, {} passed.'.format(metric))
+        raise ValueError('Only euclidean and cosine distance are supported, {} passed.'.format(metric))
 
     # Sample features only.
-    _, centers, _, _ = random_sample(num_centers_ratio, mask=(False, True, False, False), data_pipeline=data_pipeline)
+    _, centers, _, _ = random_sample(num_centers_ratio, mask=(False, True, False, False),
+                                     data_pipeline=data_pipeline)
     logging.info('Sampled {} centers totally.'.format(len(centers)))
     logging.debug('Randomly selected centers: {}'.format(centers))
 
     # Used in scaling method 4. Average distance of each point with its cluster center.
     per_clu_mean_dist = None
-    # Perform kmeans or online kmeans.
+    # Perform k-means or online k-means.
     if method is None:
         logging.info('Using randomly selected centers as model prototypes (centers).')
     elif 'online' == method:
-        # TODO.
         raise NotImplementedError('Only None (randomly select examples), online, kmeans are supported.')
     elif 'kmeans' == method:
         logging.info('Using k-means clustering result as model prototypes (centers).')
 
         return_mean_clu_dist = (scaling_method == 4)
-        kmeans = KMeans(centers, data_pipeline=data_pipeline, metric=metric, return_mean_clu_dist=return_mean_clu_dist)
+        kmeans = KMeans(centers, data_pipeline=data_pipeline, metric=metric,
+                        return_mean_clu_dist=return_mean_clu_dist)
         kmeans.fit(max_iter=max_iter, tol=tol)
-        # Get current centers.
+        # Get current centers and update centers.
         centers = kmeans.current_centers
         per_clu_mean_dist = kmeans.per_clu_mean_dist
 
     else:
-        raise NotImplementedError('Only None (randomly select examples), online, kmeans are supported.')
+        raise ValueError('Only None (randomly select examples), online, kmeans are supported.')
 
     # Compute scaling factors based on these centers.
     num_centers = len(centers)
@@ -369,7 +373,7 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
         pairwise_distances = sci_distance.pdist(centers, metric=metric)
         p = min(p, len(pairwise_distances))
         logging.info('Using {} minimal pairwise distances.'.format(p))
-        # np.partition second argument begins with 1 instead of 0.
+        # np.partition second argument begins with 0.
         sigmas = np.array([alpha * np.mean(np.partition(pairwise_distances, p - 1)[:p])] * num_centers,
                           dtype=np.float32)
     elif scaling_method == 2:
@@ -396,6 +400,8 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
         if per_clu_mean_dist is None:
             kmeans = KMeans(centers, data_pipeline=data_pipeline, metric=metric, return_mean_clu_dist=True)
             kmeans.fit(max_iter=1, tol=tol)
+
+            centers = kmeans.current_centers
             per_clu_mean_dist = kmeans.per_clu_mean_dist
 
             logging.info('Compute mean distance per cluster using kmeans or online kmeans.')
@@ -407,7 +413,7 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
         # Equation 31.
         raise NotImplementedError('Only three methods are supported. Please read the documentation.')
     else:
-        raise NotImplementedError('Only three methods are supported. Please read the documentation.')
+        raise ValueError('Only three methods are supported. Please read the documentation.')
 
     logging.debug('Scaling factor sigmas: {}'.format(sigmas))
 
@@ -425,52 +431,55 @@ def initialize_per_label():
 
     :return:
     """
-    # Must consider the labels are super imbalanced! The counts are stored in 'sum_labels.pickle' with Python3 protocol.
+    # Must consider the labels are super imbalanced!
+    # The counts are stored in 'sum_labels.pickle' with Python3 protocol.
     # logging.error
     raise NotImplementedError('It is a little troubling, will be implemented later! Be patient.')
 
 
-def rbf(num_centers_ratio, data_pipeline, init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95, epochs=None):
-    # distance metric, cosine or euclidean.
-    dist_metric = FLAGS.dist_metric
+def rbf_transform(data, centers, sigmas, metric='cosine'):
+    """
+    Transform data using given rbf centers and sigmas.
+    
+    Args:
+        data: A 2D tensorflow tensor. The second dimension represents the features.
+        centers: rbf centers. A numpy array. The second dimension equals data.
+        sigmas: rbf scaling factors. A 1D numpy array. One sigma for each center.
+        metric: distance metric. A string. cosine or euclidean.
+    Returns:
+        transformed data. A tensorflow tensor.
+    Raises:
+        ValueError if metric is not cosine or euclidean.
+    """
+    if ('cosine' == metric) or ('euclidean' == metric):
+        logging.info('rbf transform using {} distance.'.format(metric))
+    else:
+        raise ValueError('Only supported cosine and euclidean. Passed {}.'.format(metric))
 
-    # ....Start rbf network...
-    # num_centers = FLAGS.num_centers
-    # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
-    # metric is euclidean or cosine.
-    centers, sigmas = initialize(num_centers_ratio, data_pipeline=data_pipeline,
-                                 method='kmeans', metric=dist_metric, scaling_method=4)
-
-    num_centers = centers.shape[0]
-
-    reader = data_pipeline.reader
-    batch_size = data_pipeline.batch_size
-    num_classes = reader.num_classes
-
-    # Build logistic regression graph and optimize it.
-    with tf.Graph().as_default() as graph:
-        if dist_metric == 'cosine':
-            normalized_centers = centers / np.clip(np.linalg.norm(centers, axis=-1, keepdims=True), 1e-6, np.PINF)
-            prototypes = tf.Variable(initial_value=normalized_centers, dtype=tf.float32)
+    with tf.name_scope('rbf_transform_{}'.format(metric)):
+        if metric == 'cosine':
+            normalized_centers = centers / np.clip(
+                np.linalg.norm(centers, axis=-1, keepdims=True), 1e-6, np.PINF)
+            # prototypes are trainable.
+            prototypes = tf.Variable(initial_value=normalized_centers, dtype=tf.float32, name='prototypes')
         else:
-            prototypes = tf.Variable(initial_value=centers, dtype=tf.float32)
+            # prototypes are trainable.
+            prototypes = tf.Variable(initial_value=centers, dtype=tf.float32, name='prototypes')
 
         neg_two_times_sq_sigmas = np.multiply(-2.0, np.square(sigmas))
         expanded_neg_two_times_sq_sigmas = np.expand_dims(neg_two_times_sq_sigmas, axis=0)
         # [-2.0 * sigmas ** 2], basis function denominators.
-        neg_basis_f_deno = tf.Variable(initial_value=expanded_neg_two_times_sq_sigmas, dtype=tf.float32)
+        neg_basis_f_deno = tf.Variable(initial_value=expanded_neg_two_times_sq_sigmas, dtype=tf.float32,
+                                       name='neg_basis_f_deno')
 
-        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            get_input_data_tensors(data_pipeline, num_epochs=epochs, name_scope='lr_weights'))
-
-        if dist_metric == 'cosine':
-            normalized_video_batch = tf.nn.l2_normalize(video_batch, -1)
+        if metric == 'cosine':
+            normalized_video_batch = tf.nn.l2_normalize(data, -1)
             cosine_sim = tf.matmul(normalized_video_batch, prototypes, transpose_b=True)
             squared_dist = tf.square(tf.subtract(1.0, cosine_sim), name='cosine_square_dist')
         else:
             # Make use of broadcasting feature.
             expanded_centers = tf.expand_dims(prototypes, axis=0)
-            expanded_video_batch = tf.expand_dims(video_batch, axis=1)
+            expanded_video_batch = tf.expand_dims(data, axis=1)
 
             sub = tf.subtract(expanded_video_batch, expanded_centers)
             # element-wise square.
@@ -480,67 +489,14 @@ def rbf(num_centers_ratio, data_pipeline, init_learning_rate=0.01, decay_steps=4
 
         rbf_fs = tf.exp(tf.divide(squared_dist, neg_basis_f_deno), name='basis_function')
 
-        # Define num_classes logistic regression models parameters. num_centers is new feature dimension.
-        weights = tf.Variable(initial_value=tf.truncated_normal([num_centers, num_classes]),
-                              dtype=tf.float32, name='weights')
-        biases = tf.Variable(initial_value=tf.zeros([num_classes]))
-
-        lr_output = tf.matmul(rbf_fs, weights) + biases
-        lr_pred_prob = tf.nn.sigmoid(lr_output, name='lr_pred_probability')
-        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=tf.cast(video_labels_batch, tf.float32),
-                                                       logits=lr_output, name='loss')
-
-        # TODO, Add regularization.
-
-        global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
-        rough_num_examples_processed = tf.multiply(global_step, batch_size)
-        adap_learning_rate = tf.train.exponential_decay(init_learning_rate, rough_num_examples_processed,
-                                                        decay_steps, decay_rate)
-        optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
-
-        train_op = optimizer.minimize(loss, global_step=global_step)
-
-        # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
-        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-
-    # TODO, save checkpoints.
-
-    sess = tf.Session(graph=graph)
-    sess.run(init_op)
-
-    # Start input enqueue threads.
-    coord = tf.train.Coordinator()
-    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
-
-    try:
-        while not coord.should_stop():
-            sess.run(train_op)
-
-    except tf.errors.OutOfRangeError:
-        logging.info('Done training -- {} epochs finished.'.format(epochs))
-    finally:
-        # When done, ask the threads to stop.
-        coord.request_stop()
-
-    # Wait for threads to finish.
-    coord.join(threads)
-    sess.close()
-    # ....Exit rbf network...
+        return rbf_fs
 
 
-def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None):
+def rbf():
     """
-    Training.
-
-    Args:
-        init_learning_rate: Initial learning rate.
-        decay_steps: How many training steps to decay learning rate once.
-        decay_rate: How much to decay learning rate.
-        epochs: The maximal epochs to pass all training data.
-
-    Returns:
-
+    Train the rbf network.
     """
+    # The ratio of examples to sample as centers (prototypes).
     num_centers_ratio = FLAGS.num_centers_ratio
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
     reader = get_reader(model_type, feature_names, feature_sizes)
@@ -549,19 +505,52 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, epochs=None):
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
 
-    validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
-                                          batch_size=batch_size, num_readers=num_readers)
-    # ...Start linear classifier...
-    # Sample validate set for line search in linear classifier or logistic regression early stopping.
-    # _, validate_data, validate_labels, _ = random_sample(0.1, mask=(False, True, True, False),
-    #                                                      data_pipeline=validate_data_pipeline)
+    # distance metric, cosine or euclidean.
+    dist_metric = FLAGS.dist_metric
+
+    init_learning_rate = FLAGS.init_learning_rate
+    decay_steps = FLAGS.decay_steps
+    decay_rate = FLAGS.decay_rate
+    train_epochs = FLAGS.train_epochs
+    l2_reg_rate = FLAGS.l2_reg_rate
+
+    output_dir = FLAGS.output_dir
+
+    # DataPipeline consists of reader, batch size, no. of readers and data pattern.
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
                                        batch_size=batch_size, num_readers=num_readers)
 
-    initialize(num_centers_ratio, data_pipeline=train_data_pipeline, method='kmeans')
+    # ....Start rbf network...
+    logging.info('Entering rbf network...')
+    # num_centers = FLAGS.num_centers
+    # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
+    # metric is euclidean or cosine.
+    centers, sigmas = initialize(num_centers_ratio, data_pipeline=train_data_pipeline,
+                                 method='kmeans', metric=dist_metric, scaling_method=4)
 
-    # TODO, call rbf().
-    pass
+    # Call linear classification to get a good initial values of weights and biases.
+    linear_clf = LinearClassifier(logdir=output_dir)
+    linear_clf.fit(data_pipeline=train_data_pipeline, tr_data_fn=rbf_transform,
+                   tr_data_paras={'centers': centers, 'sigmas': sigmas, 'metric': dist_metric},
+                   l2_regs=0.01, line_search=False)
+
+    linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
+
+    # Sample validate set for logistic regression early stopping.
+    validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
+                                          batch_size=batch_size, num_readers=num_readers)
+
+    _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
+                                                         data_pipeline=validate_data_pipeline)
+
+    log_reg_clf = LogisticRegression(logdir=output_dir)
+    log_reg_clf.fit(train_data_pipeline=train_data_pipeline,
+                    init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
+                    epochs=train_epochs, l2_reg_rate=l2_reg_rate,
+                    initial_weights=linear_clf_weights, initial_biases=linear_clf_biases)
+
+    # ....Exit rbf network...
+    logging.info('Exit rbf network.')
 
 
 def inference(train_model_dir):
@@ -618,7 +607,8 @@ def inference(train_model_dir):
                 # Run training steps or whatever.
                 start_time = time.time()
                 video_id_batch_val, video_batch_val = test_sess.run([video_id_batch, video_batch])
-                logging.debug('video_id_batch_val: {}\nvideo_batch_val: {}'.format(video_id_batch_val, video_batch_val))
+                logging.debug('video_id_batch_val: {}\nvideo_batch_val: {}'.format(
+                    video_id_batch_val, video_batch_val))
 
                 batch_predictions_prob = sess.run(pred_prob, feed_dict={video_input_batch: video_batch_val})
 
@@ -630,7 +620,7 @@ def inference(train_model_dir):
                 now = time.time()
                 processing_count += 1
                 num_examples_processed += video_id_batch_val.shape[0]
-                print('Batch processing step: {}, elapsed seconds: {}, total number of examples processed: {}'.format(
+                print('Batch processing step {}, elapsed {} s, processed {} examples in total.'.format(
                     processing_count, now - start_time, num_examples_processed))
 
         except tf.errors.OutOfRangeError:
@@ -649,24 +639,14 @@ def inference(train_model_dir):
 
 def main(unused_argv):
     is_train = FLAGS.is_train
-    init_learning_rate = FLAGS.init_learning_rate
-    decay_steps = FLAGS.decay_steps
-    decay_rate = FLAGS.decay_rate
-
-    train_epochs = FLAGS.train_epochs
-    is_tuning_hyper_para = FLAGS.is_tuning_hyper_para
-
-    # Where training checkpoints are stored.
-    train_model_dir = FLAGS.train_model_dir
 
     logging.set_verbosity(logging.INFO)
 
     if is_train:
-        if is_tuning_hyper_para:
-            raise NotImplementedError('Implementation is under progress.')
-        else:
-            train(init_learning_rate, decay_steps, decay_rate)
+        rbf()
     else:
+        # Where training checkpoints are stored.
+        train_model_dir = FLAGS.train_model_dir
         inference(train_model_dir)
 
 
@@ -709,10 +689,9 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
 
-    flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
+    flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
 
-    flags.DEFINE_boolean('is_tuning_hyper_para', False,
-                         'Boolean variable indicating whether to perform hyper-parameter tuning.')
+    flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
     # Added current timestamp.
     flags.DEFINE_string('output_dir', '/tmp/video_level',
