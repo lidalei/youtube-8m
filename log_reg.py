@@ -188,7 +188,7 @@ def inference(train_model_dirs_list):
 
                 batch_predictions_prob_list = []
                 for sess, video_input_batch, pred_prob in zip(sess_list, video_input_batch_list, pred_prob_list):
-                    feature_shape = video_batch_val.get_shape()[-1]
+                    feature_shape = video_input_batch.get_shape()[-1]
                     logging.info('Feature shape is {}.'.format(feature_shape))
                     if feature_shape == 128:
                         _video_batch = video_batch_val[:, -128:]
