@@ -93,15 +93,14 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
         # Compute weights and biases of linear classifier using normal equation.
         # Linear search helps little.
         linear_clf = LinearClassifier(logdir=output_dir)
-        linear_clf_weights, linear_clf_biases = linear_clf.fit(data_pipeline=train_data_pipeline,
-                                                               l2_regs=[0.01],
-                                                               validate_set=(validate_data, validate_labels),
-                                                               line_search=False)
+        linear_clf.fit(data_pipeline=train_data_pipeline, l2_regs=[0.01],
+                       validate_set=(validate_data, validate_labels), line_search=False)
+        linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
 
-        logging.info('linear classifier weights and biases with shape {}, {}'.format(linear_clf_weights.shape,
-                                                                                     linear_clf_biases.shape))
-        logging.debug('linear classifier weights and {} biases: {}.'.format(linear_clf_weights,
-                                                                            linear_clf_biases))
+        logging.info('linear classifier weights and biases with shape {}, {}'.format(
+            linear_clf_weights.shape, linear_clf_biases.shape))
+        logging.debug('linear classifier weights and {} biases: {}.'.format(
+            linear_clf_weights, linear_clf_biases))
         # ...Exit linear classifier...
     else:
         linear_clf_weights, linear_clf_biases = None, None
@@ -189,7 +188,7 @@ def inference(train_model_dirs_list):
                 batch_predictions_prob_list = []
                 for sess, video_input_batch, pred_prob in zip(sess_list, video_input_batch_list, pred_prob_list):
                     feature_shape = video_input_batch.get_shape()[-1]
-                    logging.info('Feature shape is {}.'.format(feature_shape))
+                    # logging.info('Feature shape is {}.'.format(feature_shape))
                     if feature_shape == 128:
                         _video_batch = video_batch_val[:, -128:]
                     elif feature_shape == 1024:

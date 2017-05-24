@@ -15,11 +15,12 @@ class LinearClassifier(object):
              logdir: Path to the log dir.
         """
         self.logdir = logdir
-        self.best_weights = None
-        self.best_biases = None
-        self.best_rmse = np.NINF
+        self.weights = None
+        self.biases = None
+        self.rmse = np.NINF
 
-    def fit(self, data_pipeline=None, tr_data_fn=None, l2_regs=None, validate_set=None, line_search=True):
+    def fit(self, data_pipeline=None, tr_data_fn=None, tr_data_paras=None,
+            l2_regs=None, validate_set=None, line_search=True):
         """
         Compute weights and biases of linear classifier using normal equation. With line search for best l2_reg.
         Args:
@@ -29,6 +30,7 @@ class LinearClassifier(object):
                 batch_size, How many examples to handle per time.
                 num_readers, How many IO threads to prefetch examples.
             tr_data_fn: a function that transforms input data.
+            tr_data_paras: Other parameters should be passed to tr_data_fn. A dictionary.
             l2_regs: An array, each element represents how much the linear classifier weights should be penalized.
             validate_set: (data, labels) with dtype float32. The data set (numpy arrays) used to choose the best l2_reg.
                 Sampled from whole validate set if necessary. If line_search is False, this argument is simply ignored.
@@ -77,6 +79,9 @@ class LinearClassifier(object):
             validate_data.shape, validate_labels.shape))
         if (validate_data.shape[-1] != feature_size) or (validate_labels.shape[-1] != num_classes):
             raise ValueError('validate set shape does not conforms with training set.')
+        # Check extra data transform function arguments.
+        if tr_data_paras is None:
+            tr_data_paras = {}
 
         # Method - append an all-one col to X by using block matrix multiplication (all-one col is treated as a block).
         # Create the graph to traverse all data once.
@@ -101,7 +106,7 @@ class LinearClassifier(object):
             if tr_data_fn is None:
                 video_batch_transformed = tf.identity(video_batch)
             else:
-                video_batch_transformed = tr_data_fn(video_batch)
+                video_batch_transformed = tr_data_fn(video_batch, **tr_data_paras)
 
             with tf.name_scope('batch_increment'):
                 video_batch_transformed_tr = tf.matrix_transpose(video_batch_transformed, name='X_Tr')
@@ -225,11 +230,9 @@ class LinearClassifier(object):
         logging.info('The best l2_reg is {} with rmse loss {}.'.format(best_l2_reg, min_loss))
         logging.info('Exiting linear classifier ...')
 
-        self.best_weights = best_weights_val
-        self.best_biases = best_biases_val
-        self.best_rmse = min_loss
-
-        return best_weights_val, best_biases_val
+        self.weights = best_weights_val
+        self.biases = best_biases_val
+        self.rmse = min_loss
 
 
 class LogisticRegression(object):
@@ -240,6 +243,10 @@ class LogisticRegression(object):
         """
         self.logdir = logdir
         self.max_train_steps = max_train_steps
+        self.weights = None
+        self.biases = None
+        self.features_mean = None
+        self.features_var = None
 
     def fit(self, train_data_pipeline, train_features_mean_var=None,
             validate_set=None, validate_fn=None,
@@ -354,7 +361,7 @@ class LogisticRegression(object):
                 else:
                     loss = tf.reduce_mean(loss_per_ex, name='x_entropy')
 
-                # Add regularizer.
+                # Add regularization.
                 weights_l2_loss_per_label = tf.reduce_sum(tf.square(weights), axis=0, name='weights_l2_loss_per_label')
                 weights_l2_loss = tf.reduce_sum(weights_l2_loss_per_label, name='weights_l2_loss')
 
@@ -376,21 +383,15 @@ class LogisticRegression(object):
                 tf.summary.scalar('learning_rate', adap_learning_rate)
 
             with tf.name_scope('validate'):
-                validate_data_initializer = tf.placeholder(tf.float32, shape=validate_data.shape)
-                validate_labels_initializer = tf.placeholder(tf.bool, shape=validate_labels.shape)
-                validate_data_var = tf.Variable(initial_value=validate_data_initializer, trainable=False,
-                                                collections=[], name='data')
-                validate_labels_var = tf.Variable(initial_value=validate_labels_initializer, trainable=False,
-                                                  collections=[], name='labels')
-                with tf.control_dependencies([validate_data_var.initializer, validate_labels_var.initializer]):
-                    set_validate_non_op = tf.no_op('set_validate_set')
+                validate_data_pl = tf.placeholder(tf.float32, shape=validate_data.shape, name='data')
+                validate_labels_pl = tf.placeholder(tf.bool, shape=validate_labels.shape, name='labels')
 
-                float_validate_labels = tf.cast(validate_labels_var, tf.float32, name='float_labels')
+                float_validate_labels = tf.cast(validate_labels_pl, tf.float32, name='float_labels')
 
                 if train_features_mean_var is None:
-                    validate_pred = tf.add(tf.matmul(validate_data_var, weights), biases)
+                    validate_pred = tf.add(tf.matmul(validate_data_pl, weights), biases)
                 else:
-                    standardized_validate_data = tf.nn.batch_normalization(validate_data_var,
+                    standardized_validate_data = tf.nn.batch_normalization(validate_data_pl,
                                                                            mean=features_mean, variance=features_var,
                                                                            offset=None, scale=None,
                                                                            variance_epsilon=1e-12,
@@ -418,21 +419,15 @@ class LogisticRegression(object):
             # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
             init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
-        # Save trainable variables only.
-        saver = tf.train.Saver(var_list=[weights, biases, global_step, features_mean, features_var],
+        # To save global variables (by default) only. Using rbf transform will also save centers and scaling factors.
+        saver = tf.train.Saver(var_list=graph.get_collection(tf.GraphKeys.GLOBAL_VARIABLES),
                                max_to_keep=20, keep_checkpoint_every_n_hours=0.2)
         # To avoid summary causing memory usage peak, manually save summaries.
-        sv = tf.train.Supervisor(graph=graph, init_op=init_op, logdir=log_dir, global_step=global_step, summary_op=None,
-                                 save_model_secs=600, saver=saver)
+        sv = tf.train.Supervisor(graph=graph, init_op=init_op, logdir=log_dir, global_step=global_step,
+                                 summary_op=None, save_model_secs=600, saver=saver)
 
         with sv.managed_session() as sess:
             logging.info("Entering training loop...")
-            # Set validate set.
-            # normalized_validate_data = validate_data / np.clip(
-            #     np.linalg.norm(validate_data , axis=-1, keepdims=True), 1e-6, np.PINF)
-            sess.run(set_validate_non_op, feed_dict={validate_data_initializer: validate_data,
-                                                     validate_labels_initializer: validate_labels})
-            logging.info('Set validate set in the graph for future use.')
             for step in xrange(1, self.max_train_steps):
                 if sv.should_stop():
                     # Save the final model and break.
@@ -440,8 +435,13 @@ class LogisticRegression(object):
                     break
 
                 if step % 1000 == 0:
+                    # Feed validate set. Normalization is not recommended.
+                    # normalized_validate_data = validate_data / np.clip(
+                    #     np.linalg.norm(validate_data , axis=-1, keepdims=True), 1e-6, np.PINF)
                     _, summary, validate_loss_val, global_step_val, validate_pred_prob_val = sess.run(
-                        [train_op, summary_op, validate_loss, global_step, validate_pred_prob])
+                        [train_op, summary_op, validate_loss, global_step, validate_pred_prob],
+                        feed_dict={validate_data_pl: validate_data,
+                                   validate_labels_pl: validate_labels})
                     # global_step will be found automatically.
                     sv.summary_computed(sess, summary, global_step=global_step_val)
 
@@ -456,7 +456,10 @@ class LogisticRegression(object):
                 else:
                     sess.run(train_op)
 
-        logging.info("Exited training loop.")
+            logging.info("Exited training loop.")
+            self.weights, self.biases, self.features_mean, self.features_var = sess.run(
+                [weights, biases, features_mean, features_var])
+
         # Session will close automatically when with clause exits.
         # sess.close()
         sv.stop()
