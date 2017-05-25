@@ -79,6 +79,7 @@ class LinearClassifier(object):
             validate_data.shape, validate_labels.shape))
         if (validate_data.shape[-1] != feature_size) or (validate_labels.shape[-1] != num_classes):
             raise ValueError('validate set shape does not conforms with training set.')
+
         # Check extra data transform function arguments.
         if tr_data_paras is None:
             tr_data_paras = {}
@@ -245,10 +246,9 @@ class LogisticRegression(object):
         self.max_train_steps = max_train_steps
         self.weights = None
         self.biases = None
-        self.features_mean = None
-        self.features_var = None
 
-    def fit(self, train_data_pipeline, train_features_mean_var=None,
+    def fit(self, train_data_pipeline,
+            tr_data_fn=None, tr_data_paras=None,
             validate_set=None, validate_fn=None,
             bootstrap=False, init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
             epochs=None, l2_reg_rate=0.01, pos_weights=None, initial_weights=None, initial_biases=None):
@@ -256,7 +256,8 @@ class LogisticRegression(object):
         Logistic regression fit function.
         Args:
             train_data_pipeline: A namedtuple consisting of reader, data_pattern, batch_size and num_readers.
-            train_features_mean_var: For train data standardization.
+            tr_data_fn: a function that transforms input data.
+            tr_data_paras: Other parameters should be passed to tr_data_fn. A dictionary.
             validate_set: If not None, check validation loss regularly. Else, ignored.
             validate_fn: The function to check the performance of learned model parameters on validate set.
             bootstrap: If True, sampling training examples with replacement by differential weighting.
@@ -287,7 +288,11 @@ class LogisticRegression(object):
             validate_data, validate_labels = validate_set
         else:
             validate_data = np.zeros([1, feature_size], np.float32)
-            validate_labels = np.zeros([1, num_classes], np.float32)
+            validate_labels = np.zeros([1, num_classes], np.bool)
+
+        # Check extra data transform function arguments.
+        if tr_data_paras is None:
+            tr_data_paras = {}
 
         # Build logistic regression graph and optimize it.
         graph = tf.Graph()
@@ -317,21 +322,12 @@ class LogisticRegression(object):
 
             tf.summary.histogram('log_reg_biases', biases)
 
-            if train_features_mean_var is None:
-                # normalized_video_batch = tf.nn.l2_normalize(video_batch, -1, name='normalized_video_batch')
-                # For program consistency.
-                features_mean = tf.Variable(initial_value=0.0, trainable=False, name='features_mean')
-                features_var = tf.Variable(initial_value=1.0, trainable=False, name='features_var')
-                output = tf.add(tf.matmul(video_batch, weights), biases, name='output')
+            if tr_data_fn is None:
+                video_batch_transformed = tf.identity(video_batch)
             else:
-                mean, var = train_features_mean_var
-                features_mean = tf.Variable(initial_value=mean, trainable=False, name='features_mean')
-                features_var = tf.Variable(initial_value=var, trainable=False, name='features_var')
-                standardized_video_batch = tf.nn.batch_normalization(video_batch,
-                                                                     mean=features_mean, variance=features_var,
-                                                                     offset=None, scale=None, variance_epsilon=1e-12,
-                                                                     name='standardized_video_batch')
-                output = tf.add(tf.matmul(standardized_video_batch, weights), biases, name='output')
+                video_batch_transformed = tr_data_fn(video_batch, **tr_data_paras)
+
+            output = tf.add(tf.matmul(video_batch_transformed, weights), biases, name='output')
 
             float_labels = tf.cast(video_labels_batch, tf.float32, name='float_labels')
             pred_prob = tf.nn.sigmoid(output, name='pred_probability')
@@ -383,20 +379,17 @@ class LogisticRegression(object):
                 tf.summary.scalar('learning_rate', adap_learning_rate)
 
             with tf.name_scope('validate'):
-                validate_data_pl = tf.placeholder(tf.float32, shape=validate_data.shape, name='data')
-                validate_labels_pl = tf.placeholder(tf.bool, shape=validate_labels.shape, name='labels')
+                validate_data_pl = tf.placeholder(tf.float32, shape=[None, validate_data.shape[-1]], name='data')
+                validate_labels_pl = tf.placeholder(tf.bool, shape=[None, validate_labels.shape[-1]], name='labels')
 
                 float_validate_labels = tf.cast(validate_labels_pl, tf.float32, name='float_labels')
 
-                if train_features_mean_var is None:
-                    validate_pred = tf.add(tf.matmul(validate_data_pl, weights), biases)
+                if tr_data_fn is None:
+                    transformed_validate_data = tf.identity(validate_data_pl)
                 else:
-                    standardized_validate_data = tf.nn.batch_normalization(validate_data_pl,
-                                                                           mean=features_mean, variance=features_var,
-                                                                           offset=None, scale=None,
-                                                                           variance_epsilon=1e-12,
-                                                                           name='standardized_validate_data')
-                    validate_pred = tf.add(tf.matmul(standardized_validate_data, weights), biases, name='validate_pred')
+                    transformed_validate_data = tr_data_fn(validate_data_pl, **tr_data_paras)
+
+                validate_pred = tf.add(tf.matmul(transformed_validate_data, weights), biases, name='validate_pred')
 
                 validate_pred_prob = tf.nn.sigmoid(validate_pred, name='validate_pred_prob')
                 validate_loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
@@ -449,16 +442,18 @@ class LogisticRegression(object):
                         validate_per = validate_fn(predictions=validate_pred_prob_val, labels=validate_labels)
                         logging.info('Step {}, {}: {}.'.format(global_step_val, validate_fn, validate_per))
                 elif step % 100 == 0:
+                    # Computing validate summary needs validate set.
                     _, summary, validate_loss_val, global_step_val = sess.run(
-                        [train_op, summary_op, validate_loss, global_step])
+                        [train_op, summary_op, validate_loss, global_step],
+                        feed_dict={validate_data_pl: validate_data,
+                                   validate_labels_pl: validate_labels})
                     # global_step will be found automatically.
                     sv.summary_computed(sess, summary, global_step=global_step_val)
                 else:
                     sess.run(train_op)
 
             logging.info("Exited training loop.")
-            self.weights, self.biases, self.features_mean, self.features_var = sess.run(
-                [weights, biases, features_mean, features_var])
+            self.weights, self.biases = sess.run([weights, biases])
 
         # Session will close automatically when with clause exits.
         # sess.close()
