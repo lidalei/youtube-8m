@@ -180,7 +180,7 @@ class LinearClassifier(object):
             norm_equ_2_initializer: np.zeros([feature_size, num_classes], dtype=np.float32)
         })
 
-        summary_writer = tf.summary.FileWriter(path_join(self.logdir, 'linear_classifier'), graph=sess.graph)
+        summary_writer = tf.summary.FileWriter(self.logdir, graph=sess.graph)
 
         # Start input enqueue threads.
         coord = tf.train.Coordinator()
@@ -240,7 +240,7 @@ class LogisticRegression(object):
     def __init__(self, logdir='/tmp', max_train_steps=MAX_TRAIN_STEPS):
         """
         Args:
-             logdir: Path to the log dir.
+             logdir: The dir where intermediate results and model checkpoints should be written.
         """
         self.logdir = logdir
         self.max_train_steps = max_train_steps
@@ -272,9 +272,6 @@ class LogisticRegression(object):
             initial_biases: If not None, the biases will be initialized with it.
         Returns: None.
         """
-        # The dir where intermediate results and model checkpoints should be written.
-        log_dir = path_join(self.logdir, 'log_reg')
-
         reader = train_data_pipeline.reader
         batch_size = train_data_pipeline.batch_size
         num_classes = reader.num_classes
@@ -416,8 +413,8 @@ class LogisticRegression(object):
         saver = tf.train.Saver(var_list=graph.get_collection(tf.GraphKeys.GLOBAL_VARIABLES),
                                max_to_keep=20, keep_checkpoint_every_n_hours=0.2)
         # To avoid summary causing memory usage peak, manually save summaries.
-        sv = tf.train.Supervisor(graph=graph, init_op=init_op, logdir=log_dir, global_step=global_step,
-                                 summary_op=None, save_model_secs=600, saver=saver)
+        sv = tf.train.Supervisor(graph=graph, init_op=init_op, logdir=self.logdir,
+                                 global_step=global_step, summary_op=None, save_model_secs=600, saver=saver)
 
         with sv.managed_session() as sess:
             logging.info("Entering training loop...")
