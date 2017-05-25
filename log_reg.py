@@ -39,6 +39,27 @@ def gap_fn(predictions=None, labels=None):
     return calculate_gap(predictions, labels)
 
 
+def standard_scale(data, mean=None, variance=None):
+    """
+    Standard scale data using given mean and var.
+    
+    Args:
+        data: The second dimension represents the features. A 2D tensorflow tensor.
+        mean: features mean. A 1D numpy array.
+        variance: features variance. A 1D numpy array.
+    Returns:
+        transformed data. A tensorflow tensor.
+    """
+    with tf.name_scope('standard_scale'):
+        features_mean = tf.Variable(initial_value=mean, trainable=False, name='features_mean')
+        features_var = tf.Variable(initial_value=variance, trainable=False, name='features_var')
+        standardized_data = tf.nn.batch_normalization(data,
+                                                      mean=features_mean, variance=features_var,
+                                                      offset=None, scale=None, variance_epsilon=1e-12,
+                                                      name='standardized_video_batch')
+        return standardized_data
+
+
 def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, epochs=None):
     """
     Training.
@@ -110,23 +131,16 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
 
     # Run logistic regression.
     log_reg = LogisticRegression(logdir=output_dir)
-    log_reg.fit(train_data_pipeline, train_features_mean_var=(train_features_mean, train_features_var),
+    log_reg.fit(train_data_pipeline, tr_data_fn=standard_scale,
+                tr_data_paras={'mean': train_features_mean, 'variance': train_features_var},
                 validate_set=(validate_data, validate_labels), validate_fn=gap_fn, bootstrap=is_bootstrap,
                 init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
                 epochs=epochs, l2_reg_rate=l2_reg_rate, pos_weights=pos_weights,
                 initial_weights=linear_clf_weights, initial_biases=linear_clf_biases)
 
 
-def inference(train_model_dirs_list):
-    out_file_location = FLAGS.output_file
-    top_k = FLAGS.top_k
-    test_data_pattern = FLAGS.test_data_pattern
-    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
-    reader = get_reader(model_type, feature_names, feature_sizes)
-    batch_size = FLAGS.batch_size
-    num_readers = FLAGS.num_readers
-
-    # TODO, bagging, load several trained models and average the predictions.
+def inference(test_data_pipeline, train_model_dirs_list, out_file_location, top_k=20):
+    # Bagging, load several trained models and average the predictions.
     sess_list, video_input_batch_list, pred_prob_list = [], [], []
     for train_model_dir in train_model_dirs_list:
         # Load pre-trained graph and corresponding variables.
@@ -152,10 +166,6 @@ def inference(train_model_dirs_list):
             sess_list.append(sess)
             video_input_batch_list.append(video_input_batch)
             pred_prob_list.append(pred_prob)
-
-    # Get test data.
-    test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern,
-                                      batch_size=batch_size, num_readers=num_readers)
 
     test_graph = tf.Graph()
     with test_graph.as_default():
@@ -229,27 +239,33 @@ def inference(train_model_dirs_list):
 
 def main(unused_argv):
     is_train = FLAGS.is_train
-    init_learning_rate = FLAGS.init_learning_rate
-    decay_steps = FLAGS.decay_steps
-    decay_rate = FLAGS.decay_rate
-    l2_reg_rate = FLAGS.l2_reg_rate
-
-    train_epochs = FLAGS.train_epochs
-    is_tuning_hyper_para = FLAGS.is_tuning_hyper_para
-
-    # Where training checkpoints are stored.
-    train_model_dirs = FLAGS.train_model_dirs
-
     logging.set_verbosity(logging.INFO)
 
     if is_train:
-        if is_tuning_hyper_para:
-            raise NotImplementedError('Implementation is under progress.')
-        else:
-            train(init_learning_rate, decay_steps, decay_rate=decay_rate, l2_reg_rate=l2_reg_rate, epochs=train_epochs)
+        init_learning_rate = FLAGS.init_learning_rate
+        decay_steps = FLAGS.decay_steps
+        decay_rate = FLAGS.decay_rate
+        l2_reg_rate = FLAGS.l2_reg_rate
+        train_epochs = FLAGS.train_epochs
+
+        train(init_learning_rate, decay_steps, decay_rate=decay_rate, l2_reg_rate=l2_reg_rate, epochs=train_epochs)
     else:
+        # Where training checkpoints are stored.
+        train_model_dirs = FLAGS.train_model_dirs
+        out_file_location = FLAGS.output_file
+        top_k = FLAGS.top_k
+        test_data_pattern = FLAGS.test_data_pattern
+        model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
+        reader = get_reader(model_type, feature_names, feature_sizes)
+        batch_size = FLAGS.batch_size
+        num_readers = FLAGS.num_readers
+
         train_model_dirs_list = [e.strip() for e in train_model_dirs.split(',')]
-        inference(train_model_dirs_list)
+        # Get test data.
+        test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern,
+                                          batch_size=batch_size, num_readers=num_readers)
+
+        inference(test_data_pipeline, train_model_dirs_list, out_file_location, top_k=top_k)
 
 
 if __name__ == '__main__':
