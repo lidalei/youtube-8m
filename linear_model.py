@@ -80,9 +80,17 @@ class LinearClassifier(object):
         if (validate_data.shape[-1] != feature_size) or (validate_labels.shape[-1] != num_classes):
             raise ValueError('validate set shape does not conforms with training set.')
 
+        # TO BE CAUTIOUS! THE FOLLOWING MAY HAVE TO DEAL WITH FEATURE SIZE CHANGE.
         # Check extra data transform function arguments.
-        if tr_data_paras is None:
-            tr_data_paras = {}
+        # If transform changes the features size, change it.
+        if tr_data_fn is not None:
+            if tr_data_paras is None:
+                tr_data_paras = {}
+            else:
+                reshape = tr_data_paras['reshape']
+                if reshape:
+                    feature_size = tr_data_paras['size']
+                    logging.warn('Data transform changes the features size to {}.'.format(feature_size))
 
         # Method - append an all-one col to X by using block matrix multiplication (all-one col is treated as a block).
         # Create the graph to traverse all data once.
@@ -118,9 +126,12 @@ class LinearClassifier(object):
                 #                                       video_batch_transformed), name='X_Tr_X')
                 batch_norm_equ_2 = tf.matmul(video_batch_transformed_tr, video_labels_batch_cast,
                                              name='batch_norm_equ_2')
-                batch_video_count = tf.cast(tf.shape(video_batch)[0], tf.float32, name='batch_video_count')
-                batch_features_sum = tf.reduce_sum(video_batch, axis=0, name='batch_features_sum')
-                batch_labels_sum = tf.reduce_sum(video_labels_batch_cast, axis=0, name='batch_labels_sum')
+                batch_video_count = tf.cast(tf.shape(video_batch_transformed)[0], tf.float32,
+                                            name='batch_video_count')
+                batch_features_sum = tf.reduce_sum(video_batch_transformed, axis=0,
+                                                   name='batch_features_sum')
+                batch_labels_sum = tf.reduce_sum(video_labels_batch_cast, axis=0,
+                                                 name='batch_labels_sum')
 
             with tf.name_scope('update_ops'):
                 update_norm_equ_1_op = tf.assign_add(norm_equ_1, batch_norm_equ_1)
@@ -163,7 +174,12 @@ class LinearClassifier(object):
                 validate_y = tf.Variable(initial_value=validate_y_initializer, trainable=False, collections=[],
                                          name='validate_labels')
 
-                predictions = tf.matmul(validate_x, weights) + biases
+                if tr_data_fn is None:
+                    validate_x_transformed = tf.identity(validate_x)
+                else:
+                    validate_x_transformed = tr_data_fn(validate_x, **tr_data_paras)
+
+                predictions = tf.matmul(validate_x_transformed, weights) + biases
                 loss = tf.sqrt(tf.reduce_mean(tf.squared_difference(predictions, validate_y)), name='rmse')
                 # pred_labels = tf.greater_equal(predictions, 0.0, name='pred_labels')
 
@@ -247,7 +263,7 @@ class LogisticRegression(object):
         self.weights = None
         self.biases = None
 
-    def fit(self, train_data_pipeline,
+    def fit(self, train_data_pipeline, start_new_model=False,
             tr_data_fn=None, tr_data_paras=None,
             validate_set=None, validate_fn=None,
             bootstrap=False, init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
@@ -256,6 +272,7 @@ class LogisticRegression(object):
         Logistic regression fit function.
         Args:
             train_data_pipeline: A namedtuple consisting of reader, data_pattern, batch_size and num_readers.
+            start_new_model: If True, start a new model instead of restoring from existing checkpoints.
             tr_data_fn: a function that transforms input data.
             tr_data_paras: Other parameters should be passed to tr_data_fn. A dictionary.
             validate_set: If not None, check validation loss regularly. Else, ignored.
@@ -288,8 +305,17 @@ class LogisticRegression(object):
             validate_labels = np.zeros([1, num_classes], np.bool)
 
         # Check extra data transform function arguments.
-        if tr_data_paras is None:
-            tr_data_paras = {}
+        # If transform changes the features size, change it.
+        if tr_data_fn is not None:
+            if tr_data_paras is None:
+                tr_data_paras = {}
+            else:
+                reshape = tr_data_paras['reshape']
+                if reshape:
+                    feature_size = tr_data_paras['size']
+                    logging.warn('Data transform changes the features size.')
+
+            logging.info('Data transform arguments are {}.'.format(tr_data_paras))
 
         # Build logistic regression graph and optimize it.
         graph = tf.Graph()
@@ -408,6 +434,16 @@ class LogisticRegression(object):
 
             # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
             init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+        # Start new model, delete existing checkpoints.
+        if start_new_model and tf.gfile.Exists(self.logdir):
+            try:
+                tf.gfile.DeleteRecursively(self.logdir)
+            except tf.errors.OpError:
+                logging.error('Failed to delete dir {} to start a new model. Please delete it manually.'.format(
+                    self.logdir))
+            else:
+                logging.info('Deleting train dir {} successfully to start a new model.'.format(self.logdir))
 
         # To save global variables (by default) only. Using rbf transform will also save centers and scaling factors.
         saver = tf.train.Saver(var_list=graph.get_collection(tf.GraphKeys.GLOBAL_VARIABLES),

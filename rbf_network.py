@@ -437,7 +437,7 @@ def initialize_per_label():
     raise NotImplementedError('It is a little troubling, will be implemented later! Be patient.')
 
 
-def rbf_transform(data, centers, sigmas, metric='cosine'):
+def rbf_transform(data, centers, sigmas, metric='cosine', **kwargs):
     """
     Transform data using given rbf centers and sigmas.
     
@@ -446,6 +446,7 @@ def rbf_transform(data, centers, sigmas, metric='cosine'):
         centers: rbf centers. A numpy array. The second dimension equals data.
         sigmas: rbf scaling factors. A 1D numpy array. One sigma for each center.
         metric: distance metric. A string. cosine or euclidean.
+        kwargs: For accepting other useless arguments. Here, there are reshape and size.
     Returns:
         transformed data. A tensorflow tensor.
     Raises:
@@ -528,10 +529,16 @@ def rbf():
     centers, sigmas = initialize(num_centers_ratio, data_pipeline=train_data_pipeline,
                                  method='kmeans', metric=dist_metric, scaling_method=4)
 
+    num_centers = centers.shape[0]
+
+    tr_data_fn = rbf_transform
+    tr_data_paras = {'centers': centers, 'sigmas': sigmas, 'metric': dist_metric,
+                     'reshape': True, 'size': num_centers}
+
     # Call linear classification to get a good initial values of weights and biases.
     linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
-    linear_clf.fit(data_pipeline=train_data_pipeline, tr_data_fn=rbf_transform,
-                   tr_data_paras={'centers': centers, 'sigmas': sigmas, 'metric': dist_metric},
+    linear_clf.fit(data_pipeline=train_data_pipeline,
+                   tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
                    l2_regs=0.01, line_search=False)
 
     linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
@@ -544,7 +551,9 @@ def rbf():
                                                          data_pipeline=validate_data_pipeline)
 
     log_reg_clf = LogisticRegression(logdir=path_join(output_dir, 'log_reg'))
-    log_reg_clf.fit(train_data_pipeline=train_data_pipeline,
+    log_reg_clf.fit(train_data_pipeline=train_data_pipeline, start_new_model=True,
+                    tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
+                    validate_set=(validate_data, validate_labels),
                     init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
                     epochs=train_epochs, l2_reg_rate=l2_reg_rate,
                     initial_weights=linear_clf_weights, initial_biases=linear_clf_biases)
@@ -600,7 +609,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
 
-    flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
+    flags.DEFINE_integer('train_epochs', 200, 'Training epochs, one epoch means passing all training data once.')
 
     # Added current timestamp.
     flags.DEFINE_string('output_dir', '/tmp/video_level/rbf_network',

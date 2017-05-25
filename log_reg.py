@@ -38,7 +38,7 @@ def gap_fn(predictions=None, labels=None):
     return calculate_gap(predictions, labels)
 
 
-def standard_scale(data, mean=None, variance=None):
+def standard_scale(data, mean=None, variance=None, **kwargs):
     """
     Standard scale data using given mean and var.
     
@@ -46,6 +46,7 @@ def standard_scale(data, mean=None, variance=None):
         data: The second dimension represents the features. A 2D tensorflow tensor.
         mean: features mean. A 1D numpy array.
         variance: features variance. A 1D numpy array.
+        kwargs: For accepting other useless arguments. Here, there are reshape and size.
     Returns:
         transformed data. A tensorflow tensor.
     """
@@ -128,10 +129,14 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
     # Load train data mean and std.
     train_features_mean, train_features_var = load_features_mean_var(reader)
 
+    tr_data_fn = standard_scale
+    tr_data_paras = {'mean': train_features_mean, 'variance': train_features_var,
+                     'reshape': False, 'size': None}
+
     # Run logistic regression.
     log_reg = LogisticRegression(logdir=path_join(output_dir, 'log_reg'))
-    log_reg.fit(train_data_pipeline, tr_data_fn=standard_scale,
-                tr_data_paras={'mean': train_features_mean, 'variance': train_features_var},
+    log_reg.fit(train_data_pipeline,
+                tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
                 validate_set=(validate_data, validate_labels), validate_fn=gap_fn, bootstrap=is_bootstrap,
                 init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
                 epochs=epochs, l2_reg_rate=l2_reg_rate, pos_weights=pos_weights,
@@ -189,7 +194,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
 
-    flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
+    flags.DEFINE_integer('train_epochs', 200, 'Training epochs, one epoch means passing all training data once.')
 
     flags.DEFINE_boolean('is_tuning_hyper_para', False,
                          'Boolean variable indicating whether to perform hyper-parameter tuning.')
