@@ -24,14 +24,14 @@ import time
 from linear_model import LinearClassifier, LogisticRegression
 from readers import get_reader
 from utils import get_input_data_tensors, DataPipeline, random_sample
-from tensorflow import flags, gfile, logging, app
+from tensorflow import flags, logging, app
 
-from os.path import join as path_join, dirname
-import pickle
+from os.path import join as path_join
 import numpy as np
 import scipy.spatial.distance as sci_distance
 
-from inference import format_lines
+from bootstrap_inference import BootstrapInference
+
 
 FLAGS = flags.FLAGS
 NUM_TRAIN_EXAMPLES = 4906660
@@ -529,7 +529,7 @@ def rbf():
                                  method='kmeans', metric=dist_metric, scaling_method=4)
 
     # Call linear classification to get a good initial values of weights and biases.
-    linear_clf = LinearClassifier(logdir=output_dir)
+    linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
     linear_clf.fit(data_pipeline=train_data_pipeline, tr_data_fn=rbf_transform,
                    tr_data_paras={'centers': centers, 'sigmas': sigmas, 'metric': dist_metric},
                    l2_regs=0.01, line_search=False)
@@ -543,7 +543,7 @@ def rbf():
     _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
                                                          data_pipeline=validate_data_pipeline)
 
-    log_reg_clf = LogisticRegression(logdir=output_dir)
+    log_reg_clf = LogisticRegression(logdir=path_join(output_dir, 'log_reg'))
     log_reg_clf.fit(train_data_pipeline=train_data_pipeline,
                     init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
                     epochs=train_epochs, l2_reg_rate=l2_reg_rate,
@@ -553,101 +553,10 @@ def rbf():
     logging.info('Exit rbf network.')
 
 
-def inference(train_model_dir):
-    out_file_location = FLAGS.output_file
-    top_k = FLAGS.top_k
-    test_data_pattern = FLAGS.test_data_pattern
-    model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
-    reader = get_reader(model_type, feature_names, feature_sizes)
-    batch_size = FLAGS.batch_size
-    num_readers = FLAGS.num_readers
-
-    # Load pre-trained graph and corresponding variables.
-    sess = tf.Session()
-    latest_checkpoint = tf.train.latest_checkpoint(train_model_dir)
-    if latest_checkpoint is None:
-        raise Exception("unable to find a checkpoint at location: {}".format(train_model_dir))
-    else:
-        meta_graph_location = '{}{}'.format(latest_checkpoint, ".meta")
-        logging.info("loading meta-graph: {}".format(meta_graph_location))
-    pre_trained_saver = tf.train.import_meta_graph(meta_graph_location, clear_devices=True)
-    logging.info("restoring variables from {}".format(latest_checkpoint))
-    pre_trained_saver.restore(sess, latest_checkpoint)
-    # Get collections to be used in making predictions for test data.
-    video_input_batch = tf.get_collection('video_input_batch')[0]
-    pred_prob = tf.get_collection('predictions')[0]
-
-    # Get test data.
-    test_data_pipeline = DataPipeline(reader=reader, data_pattern=test_data_pattern,
-                                      batch_size=batch_size, num_readers=num_readers)
-
-    test_graph = tf.Graph()
-    with test_graph.as_default():
-        video_id_batch, video_batch, labels_batch, num_frames_batch = (
-            get_input_data_tensors(test_data_pipeline, shuffle=False, num_epochs=1, name_scope='test_input'))
-
-        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-
-    # Run test graph to get video batch and feed video batch to pre_trained_graph to get predictions.
-    test_sess = tf.Session(graph=test_graph)
-    with gfile.Open(out_file_location, "w+") as out_file:
-        test_sess.run(init_op)
-
-        # Be cautious to not be blocked by queue.
-        # Start input enqueue threads.
-        coord = tf.train.Coordinator()
-        threads = tf.train.start_queue_runners(sess=test_sess, coord=coord)
-
-        processing_count, num_examples_processed = 0, 0
-        out_file.write("VideoId,LabelConfidencePairs\n")
-
-        try:
-
-            while not coord.should_stop():
-                # Run training steps or whatever.
-                start_time = time.time()
-                video_id_batch_val, video_batch_val = test_sess.run([video_id_batch, video_batch])
-                logging.debug('video_id_batch_val: {}\nvideo_batch_val: {}'.format(
-                    video_id_batch_val, video_batch_val))
-
-                batch_predictions_prob = sess.run(pred_prob, feed_dict={video_input_batch: video_batch_val})
-
-                # Write batch predictions to files.
-                for line in format_lines(video_id_batch_val, batch_predictions_prob, top_k):
-                    out_file.write(line)
-                out_file.flush()
-
-                now = time.time()
-                processing_count += 1
-                num_examples_processed += video_id_batch_val.shape[0]
-                print('Batch processing step {}, elapsed {} s, processed {} examples in total.'.format(
-                    processing_count, now - start_time, num_examples_processed))
-
-        except tf.errors.OutOfRangeError:
-            logging.info('Done with inference. The predictions were written to {}'.format(out_file_location))
-        finally:
-            # When done, ask the threads to stop.
-            coord.request_stop()
-
-        # Wait for threads to finish.
-        coord.join(threads)
-
-        test_sess.close()
-        out_file.close()
-        sess.close()
-
-
 def main(unused_argv):
-    is_train = FLAGS.is_train
-
     logging.set_verbosity(logging.INFO)
 
-    if is_train:
-        rbf()
-    else:
-        # Where training checkpoints are stored.
-        train_model_dir = FLAGS.train_model_dir
-        inference(train_model_dir)
+    rbf()
 
 
 if __name__ == '__main__':
@@ -694,15 +603,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
     # Added current timestamp.
-    flags.DEFINE_string('output_dir', '/tmp/video_level',
+    flags.DEFINE_string('output_dir', '/tmp/video_level/rbf_network',
                         'The directory where intermediate and model checkpoints should be written.')
-
-    flags.DEFINE_string('train_model_dir', '/tmp/video_level/rbf-network',
-                        'The directory to load trained model.')
-
-    flags.DEFINE_string('output_file', '/tmp/video_level/rbf-network/predictions.csv',
-                        'The file to save the predictions to.')
-
-    flags.DEFINE_integer('top_k', 20, 'How many predictions to output per video.')
 
     app.run()
