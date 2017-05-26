@@ -3,7 +3,6 @@ import numpy as np
 
 from tensorflow import logging
 from utils import get_input_data_tensors
-from os.path import join as path_join
 
 MAX_TRAIN_STEPS = 1000000
 
@@ -260,8 +259,212 @@ class LogisticRegression(object):
         """
         self.logdir = logdir
         self.max_train_steps = max_train_steps
-        self.weights = None
-        self.biases = None
+
+        # Member variables used to construct graph.
+        self.train_data_pipeline = None
+        self.raw_feature_size = None
+        self.feature_size = None
+        self.num_classes = None
+        self.batch_size = None
+        self.tr_data_fn = None
+        self.tr_data_paras = dict()
+        self.bootstrap = False
+        self.init_learning_rate = 0.01
+        self.decay_steps = 40000
+        self.decay_rate = 0.95
+        self.epochs = None
+        self.l2_reg_rate = 0.01
+        self.pos_weights = None
+        self.initial_weights = None
+        self.initial_biases = None
+
+        self.graph = None
+        # Member variables associated with graph.
+        self.saver = None
+        self.global_step = None
+        self.init_op = None
+        self.train_op = None
+        self.summary_op = None
+        self.validate_data_pl = None
+        self.validate_labels_pl = None
+        self.validate_pred_prob = None
+
+    def _build_graph(self):
+        """
+        Build graph.
+        
+        Returns:
+            A saver object. It can be used in constructing a Supervisor object.
+        Note:
+            To avoid contaminating default graph.
+            This function must be wrapped into a with tf.Graph().as_default() as graph contextmanager.
+        """
+        # Build logistic regression graph and optimize it.
+        # Set seed to keep whole data sampling consistency, though impossible due to system variation.
+        seed = np.random.randint(2 ** 28)
+        tf.set_random_seed(seed)
+
+        global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
+
+        video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
+            get_input_data_tensors(self.train_data_pipeline, shuffle=True, num_epochs=self.epochs,
+                                   name_scope='train_input'))
+
+        # Define num_classes logistic regression models parameters.
+        if self.initial_weights is None:
+            weights = tf.Variable(initial_value=tf.truncated_normal([self.feature_size, self.num_classes]),
+                                  dtype=tf.float32, name='weights')
+        else:
+            weights = tf.Variable(initial_value=self.initial_weights, dtype=tf.float32, name='weights')
+
+        tf.summary.histogram('log_reg_weights', weights)
+
+        if self.initial_biases is None:
+            biases = tf.Variable(initial_value=tf.zeros([self.num_classes]), name='biases')
+        else:
+            biases = tf.Variable(initial_value=self.initial_biases, name='biases')
+
+        tf.summary.histogram('log_reg_biases', biases)
+
+        if self.tr_data_fn is None:
+            video_batch_transformed = tf.identity(video_batch)
+        else:
+            video_batch_transformed = self.tr_data_fn(video_batch, **self.tr_data_paras)
+
+        output = tf.add(tf.matmul(video_batch_transformed, weights), biases, name='output')
+
+        float_labels = tf.cast(video_labels_batch, tf.float32, name='float_labels')
+        pred_prob = tf.nn.sigmoid(output, name='pred_probability')
+
+        with tf.name_scope('train_loss'):
+            if self.pos_weights is None:
+                loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
+                    labels=float_labels, logits=output, name='x_entropy_per_ex_label')
+            else:
+                loss_per_ex_label = tf.nn.weighted_cross_entropy_with_logits(
+                    targets=float_labels, logits=output, pos_weight=self.pos_weights,
+                    name='x_entropy_per_ex_label')
+
+            # Sum over label set.
+            loss_per_ex = tf.reduce_sum(loss_per_ex_label, axis=1, name='loss_per_ex')
+
+            #  In addition to class weighting, example weighting is supported.
+            if self.bootstrap:
+                num_videos = tf.shape(loss_per_ex)[0]
+                sample_indices = tf.random_uniform([num_videos], maxval=num_videos, dtype=tf.int32,
+                                                   name='sample_indices')
+                example_weights = tf.unsorted_segment_sum(tf.ones([num_videos]), sample_indices, num_videos,
+                                                          name='example_weights')
+                # bootstrap-weighted loss.
+                weighted_loss_per_ex = tf.multiply(loss_per_ex, example_weights, name='weighted_loss_per_ex')
+                # Mean over batch.
+                loss = tf.reduce_mean(weighted_loss_per_ex, name='x_entropy')
+            else:
+                # Mean over batch.
+                loss = tf.reduce_mean(loss_per_ex, name='x_entropy')
+
+            # Add regularization.
+            weights_l2_loss_per_label = tf.reduce_sum(tf.square(weights), axis=0, name='weights_l2_loss_per_label')
+            weights_l2_loss = tf.reduce_sum(weights_l2_loss_per_label, name='weights_l2_loss')
+
+            final_loss = tf.add(loss, tf.multiply(self.l2_reg_rate, weights_l2_loss), name='final_loss')
+
+            tf.summary.histogram('weights_l2_loss_per_label', weights_l2_loss_per_label)
+            tf.summary.scalar('weights_l2_loss', weights_l2_loss)
+            tf.summary.scalar('xentropy', loss)
+
+        with tf.name_scope('optimization'):
+            # Decayed learning rate.
+            rough_num_examples_processed = tf.multiply(global_step, self.batch_size)
+            adap_learning_rate = tf.train.exponential_decay(self.init_learning_rate, rough_num_examples_processed,
+                                                            self.decay_steps, self.decay_rate, staircase=True,
+                                                            name='adap_learning_rate')
+            optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
+            train_op = optimizer.minimize(final_loss, global_step=global_step)
+
+            tf.summary.scalar('learning_rate', adap_learning_rate)
+
+        with tf.name_scope('validate'):
+            validate_data_pl = tf.placeholder(tf.float32, shape=[None, self.raw_feature_size], name='data')
+            validate_labels_pl = tf.placeholder(tf.bool, shape=[None, self.num_classes], name='labels')
+
+            float_validate_labels = tf.cast(validate_labels_pl, tf.float32, name='float_labels')
+
+            if self.tr_data_fn is None:
+                transformed_validate_data = tf.identity(validate_data_pl)
+            else:
+                transformed_validate_data = self.tr_data_fn(validate_data_pl, **self.tr_data_paras)
+
+            validate_pred = tf.add(tf.matmul(transformed_validate_data, weights), biases, name='validate_pred')
+
+            validate_pred_prob = tf.nn.sigmoid(validate_pred, name='validate_pred_prob')
+            validate_loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
+                labels=float_validate_labels, logits=validate_pred, name='x_entropy_per_ex_label')
+
+            validate_loss_per_label = tf.reduce_mean(validate_loss_per_ex_label, axis=0,
+                                                     name='x_entropy_per_label')
+
+            validate_loss = tf.reduce_sum(validate_loss_per_label, name='x_entropy')
+
+            tf.summary.histogram('xentropy_per_label', validate_loss_per_label)
+            tf.summary.scalar('xentropy', validate_loss)
+
+        summary_op = tf.summary.merge_all()
+        # summary_op = tf.constant(1.0)
+
+        # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+        # Used for restoring training checkpoints.
+        tf.add_to_collection('global_step', global_step)
+        tf.add_to_collection('init_op', init_op)
+        tf.add_to_collection('train_op', train_op)
+        tf.add_to_collection('summary_op', summary_op)
+        tf.add_to_collection('validate_data_pl', validate_data_pl)
+        tf.add_to_collection('validate_labels_pl', validate_labels_pl)
+        tf.add_to_collection('validate_pred_prob', validate_pred_prob)
+        # Add to collection. In inference, get collection and feed it with test data.
+        tf.add_to_collection('video_input_batch', video_batch)
+        tf.add_to_collection('predictions', pred_prob)
+
+        # To save global variables and savable objects, i.e., var_list is None.
+        # Using rbf transform will also save centers and scaling factors.
+        saver = tf.train.Saver(max_to_keep=20, keep_checkpoint_every_n_hours=0.2)
+
+        return saver
+
+    def _restore_graph(self):
+        """
+        Restore graph def.
+        Returns:
+             A saver previously created when building this graph.
+        Note:
+            To avoid contaminating default graph.
+            This function must be wrapped into a with tf.Graph().as_default() as graph contextmanager.
+        """
+        # Load pre-trained graph.
+        latest_checkpoint = tf.train.latest_checkpoint(self.logdir)
+        if latest_checkpoint is None:
+            raise Exception("unable to find a checkpoint at location: {}".format(self.logdir))
+        else:
+            meta_graph_location = '{}{}'.format(latest_checkpoint, ".meta")
+            logging.info("loading meta-graph: {}".format(meta_graph_location))
+        # Recreates a Graph saved in a MetaGraphDef proto, docs.
+        pre_trained_saver = tf.train.import_meta_graph(meta_graph_location, clear_devices=True)
+
+        return pre_trained_saver
+
+    def _check_graph_initialized(self):
+            """
+            To check if all graph operations and the graph itself are initialized successfully.
+
+            Return:
+                True if graph and all graph ops are not None, otherwise False.
+            """
+            graph_ops = [self.saver, self.global_step, self.init_op, self.train_op, self.summary_op,
+                         self.validate_data_pl, self.validate_labels_pl, self.validate_pred_prob]
+
+            return (self.graph is not None) and (graph_ops.count(None) == 0)
 
     def fit(self, train_data_pipeline, start_new_model=False,
             tr_data_fn=None, tr_data_paras=None,
@@ -294,180 +497,113 @@ class LogisticRegression(object):
         num_classes = reader.num_classes
         feature_names = reader.feature_names
         feature_sizes = reader.feature_sizes
-        feature_size = sum(feature_sizes)
         logging.info('Logistic regression uses {} features with dims {}.'.format(feature_names, feature_sizes))
+
+        raw_feature_size = sum(feature_sizes)
+
+        self.train_data_pipeline = train_data_pipeline
+        self.raw_feature_size = raw_feature_size
+        self.feature_size = raw_feature_size
+        self.num_classes = num_classes
+        self.batch_size = batch_size
+        self.tr_data_fn = tr_data_fn
+        self.tr_data_paras = tr_data_paras
+        self.bootstrap = bootstrap
+        self.init_learning_rate = init_learning_rate
+        self.decay_steps = decay_steps
+        self.decay_rate = decay_rate
+        self.epochs = epochs
+        self.l2_reg_rate = l2_reg_rate
+        self.pos_weights = pos_weights
+        self.initial_weights = initial_weights
+        self.initial_biases = initial_biases
 
         # Sample validate set.
         if validate_set is not None:
             validate_data, validate_labels = validate_set
         else:
-            validate_data = np.zeros([1, feature_size], np.float32)
-            validate_labels = np.zeros([1, num_classes], np.bool)
+            validate_data = np.zeros([1, self.raw_feature_size], np.float32)
+            validate_labels = np.zeros([1, self.num_classes], np.bool)
 
         # Check extra data transform function arguments.
         # If transform changes the features size, change it.
-        if tr_data_fn is not None:
-            if tr_data_paras is None:
-                tr_data_paras = {}
+        if self.tr_data_fn is not None:
+            if self.tr_data_paras is None:
+                self.tr_data_paras = dict()
             else:
-                reshape = tr_data_paras['reshape']
+                reshape = self.tr_data_paras['reshape']
                 if reshape:
-                    feature_size = tr_data_paras['size']
-                    logging.warn('Data transform changes the features size.')
+                    self.feature_size = self.tr_data_paras['size']
+                    logging.warn('Data transform changes the features size to {}.'.format(
+                        self.feature_size))
 
-            logging.info('Data transform arguments are {}.'.format(tr_data_paras))
+            logging.debug('Data transform arguments are {}.'.format(self.tr_data_paras))
+        else:
+            self.tr_data_paras = dict()
 
-        # Build logistic regression graph and optimize it.
-        graph = tf.Graph()
-        with graph.as_default():
-            # Set seed to keep whole data sampling consistency, though impossible due to system variation.
-            seed = np.random.randint(2 ** 28)
-            tf.set_random_seed(seed)
+        start_new_model = start_new_model or (not tf.gfile.Exists(self.logdir))
 
-            global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
-
-            video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-                get_input_data_tensors(train_data_pipeline, shuffle=True, num_epochs=epochs, name_scope='train_input'))
-
-            # Define num_classes logistic regression models parameters.
-            if initial_weights is None:
-                weights = tf.Variable(initial_value=tf.truncated_normal([feature_size, num_classes]),
-                                      dtype=tf.float32, name='weights')
-            else:
-                weights = tf.Variable(initial_value=initial_weights, dtype=tf.float32, name='weights')
-
-            tf.summary.histogram('log_reg_weights', weights)
-
-            if initial_biases is None:
-                biases = tf.Variable(initial_value=tf.zeros([num_classes]), name='biases')
-            else:
-                biases = tf.Variable(initial_value=initial_biases, name='biases')
-
-            tf.summary.histogram('log_reg_biases', biases)
-
-            if tr_data_fn is None:
-                video_batch_transformed = tf.identity(video_batch)
-            else:
-                video_batch_transformed = tr_data_fn(video_batch, **tr_data_paras)
-
-            output = tf.add(tf.matmul(video_batch_transformed, weights), biases, name='output')
-
-            float_labels = tf.cast(video_labels_batch, tf.float32, name='float_labels')
-            pred_prob = tf.nn.sigmoid(output, name='pred_probability')
-
-            with tf.name_scope('train_loss'):
-                if pos_weights is None:
-                    loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
-                        labels=float_labels, logits=output, name='x_entropy_per_ex_label')
+        # This is NECESSARY to avoid contaminating default graph.
+        # Alternatively, we can define a member graph variable. When building a new graph or
+        # restoring a graph, wrap the code into a similar contextmanager.
+        self.graph = tf.Graph()
+        with self.graph.as_default():
+            if start_new_model:
+                logging.info('Starting a new model...')
+                # Start new model, delete existing checkpoints.
+                if tf.gfile.Exists(self.logdir):
+                    try:
+                        tf.gfile.DeleteRecursively(self.logdir)
+                    except tf.errors.OpError:
+                        logging.error('Failed to delete dir {}.'.format(self.logdir))
+                    else:
+                        logging.info('Succeeded to delete train dir {}.'.format(self.logdir))
                 else:
-                    loss_per_ex_label = tf.nn.weighted_cross_entropy_with_logits(
-                        targets=float_labels, logits=output, pos_weight=pos_weights, name='x_entropy_per_ex_label')
+                    # Do nothing.
+                    pass
 
-                # Sum over label set.
-                loss_per_ex = tf.reduce_sum(loss_per_ex_label, axis=1, name='loss_per_ex')
-
-                # Mean over batch.
-                #  In addition to class weighting, example weighting is supported.
-                if bootstrap:
-                    num_videos = tf.shape(loss_per_ex)[0]
-                    sample_indices = tf.random_uniform([num_videos], maxval=num_videos, dtype=tf.int32,
-                                                       name='sample_indices')
-                    example_weights = tf.unsorted_segment_sum(tf.ones([num_videos]), sample_indices, num_videos,
-                                                              name='example_weights')
-                    # bootstrap-weighted loss.
-                    weighted_loss_per_ex = tf.multiply(loss_per_ex, example_weights, name='weighted_loss_per_ex')
-                    loss = tf.reduce_mean(weighted_loss_per_ex, name='x_entropy')
-                else:
-                    loss = tf.reduce_mean(loss_per_ex, name='x_entropy')
-
-                # Add regularization.
-                weights_l2_loss_per_label = tf.reduce_sum(tf.square(weights), axis=0, name='weights_l2_loss_per_label')
-                weights_l2_loss = tf.reduce_sum(weights_l2_loss_per_label, name='weights_l2_loss')
-
-                final_loss = tf.add(loss, tf.multiply(l2_reg_rate, weights_l2_loss), name='final_loss')
-
-                tf.summary.histogram('weights_l2_loss_per_label', weights_l2_loss_per_label)
-                tf.summary.scalar('weights_l2_loss', weights_l2_loss)
-                tf.summary.scalar('xentropy', loss)
-
-            with tf.name_scope('optimization'):
-                # Decayed learning rate.
-                rough_num_examples_processed = tf.multiply(global_step, batch_size)
-                adap_learning_rate = tf.train.exponential_decay(init_learning_rate, rough_num_examples_processed,
-                                                                decay_steps, decay_rate, staircase=True,
-                                                                name='adap_learning_rate')
-                optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
-                train_op = optimizer.minimize(final_loss, global_step=global_step)
-
-                tf.summary.scalar('learning_rate', adap_learning_rate)
-
-            with tf.name_scope('validate'):
-                validate_data_pl = tf.placeholder(tf.float32, shape=[None, validate_data.shape[-1]], name='data')
-                validate_labels_pl = tf.placeholder(tf.bool, shape=[None, validate_labels.shape[-1]], name='labels')
-
-                float_validate_labels = tf.cast(validate_labels_pl, tf.float32, name='float_labels')
-
-                if tr_data_fn is None:
-                    transformed_validate_data = tf.identity(validate_data_pl)
-                else:
-                    transformed_validate_data = tr_data_fn(validate_data_pl, **tr_data_paras)
-
-                validate_pred = tf.add(tf.matmul(transformed_validate_data, weights), biases, name='validate_pred')
-
-                validate_pred_prob = tf.nn.sigmoid(validate_pred, name='validate_pred_prob')
-                validate_loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
-                    labels=float_validate_labels, logits=validate_pred, name='x_entropy_per_ex_label')
-
-                validate_loss_per_label = tf.reduce_mean(validate_loss_per_ex_label, axis=0,
-                                                         name='x_entropy_per_label')
-
-                validate_loss = tf.reduce_sum(validate_loss_per_label, name='x_entropy')
-
-                tf.summary.histogram('xentropy_per_label', validate_loss_per_label)
-                tf.summary.scalar('xentropy', validate_loss)
-
-            # Add to collection. In inference, get collection and feed it with test data.
-            tf.add_to_collection('video_input_batch', video_batch)
-            tf.add_to_collection('predictions', pred_prob)
-
-            summary_op = tf.summary.merge_all()
-
-            # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
-            init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
-
-        # Start new model, delete existing checkpoints.
-        if start_new_model and tf.gfile.Exists(self.logdir):
-            try:
-                tf.gfile.DeleteRecursively(self.logdir)
-            except tf.errors.OpError:
-                logging.error('Failed to delete dir {} to start a new model. Please delete it manually.'.format(
-                    self.logdir))
+                # Build graph, namely building a graph and initialize member variables associated with graph.
+                self.saver = self._build_graph()
             else:
-                logging.info('Deleting train dir {} successfully to start a new model.'.format(self.logdir))
+                self.saver = self._restore_graph()
 
-        # To save global variables (by default) only. Using rbf transform will also save centers and scaling factors.
-        saver = tf.train.Saver(var_list=graph.get_collection(tf.GraphKeys.GLOBAL_VARIABLES),
-                               max_to_keep=20, keep_checkpoint_every_n_hours=0.2)
+            # After either building a graph or restoring a graph, graph is CONSTRUCTED successfully.
+            # Get collections to be used in training.
+            self.global_step = tf.get_collection('global_step')[0]
+            self.init_op = tf.get_collection('init_op')[0]
+            self.train_op = tf.get_collection('train_op')[0]
+            self.summary_op = tf.get_collection('summary_op')[0]
+            self.validate_data_pl = tf.get_collection('validate_data_pl')[0]
+            self.validate_labels_pl = tf.get_collection('validate_labels_pl')[0]
+            self.validate_pred_prob = tf.get_collection('validate_pred_prob')[0]
+
+        if self._check_graph_initialized():
+            logging.info('Succeeded to initialize logistic regression Graph.')
+        else:
+            logging.error('Failed to initialize logistic regression Graph.')
+
+        # Start or restore training.
         # To avoid summary causing memory usage peak, manually save summaries.
-        sv = tf.train.Supervisor(graph=graph, init_op=init_op, logdir=self.logdir,
-                                 global_step=global_step, summary_op=None, save_model_secs=600, saver=saver)
+        sv = tf.train.Supervisor(graph=self.graph, init_op=self.init_op, logdir=self.logdir,
+                                 global_step=self.global_step, summary_op=None,
+                                 save_model_secs=600, saver=self.saver)
 
         with sv.managed_session() as sess:
             logging.info("Entering training loop...")
             for step in xrange(1, self.max_train_steps):
                 if sv.should_stop():
                     # Save the final model and break.
-                    saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
+                    self.saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
                     break
 
                 if step % 1000 == 0:
                     # Feed validate set. Normalization is not recommended.
                     # normalized_validate_data = validate_data / np.clip(
                     #     np.linalg.norm(validate_data , axis=-1, keepdims=True), 1e-6, np.PINF)
-                    _, summary, validate_loss_val, global_step_val, validate_pred_prob_val = sess.run(
-                        [train_op, summary_op, validate_loss, global_step, validate_pred_prob],
-                        feed_dict={validate_data_pl: validate_data,
-                                   validate_labels_pl: validate_labels})
+                    _, summary, global_step_val, validate_pred_prob_val = sess.run(
+                        [self.train_op, self.summary_op, self.global_step, self.validate_pred_prob],
+                        feed_dict={self.validate_data_pl: validate_data,
+                                   self.validate_labels_pl: validate_labels})
                     # global_step will be found automatically.
                     sv.summary_computed(sess, summary, global_step=global_step_val)
 
@@ -476,17 +612,16 @@ class LogisticRegression(object):
                         logging.info('Step {}, {}: {}.'.format(global_step_val, validate_fn, validate_per))
                 elif step % 100 == 0:
                     # Computing validate summary needs validate set.
-                    _, summary, validate_loss_val, global_step_val = sess.run(
-                        [train_op, summary_op, validate_loss, global_step],
-                        feed_dict={validate_data_pl: validate_data,
-                                   validate_labels_pl: validate_labels})
+                    _, summary, global_step_val = sess.run(
+                        [self.train_op, self.summary_op, self.global_step],
+                        feed_dict={self.validate_data_pl: validate_data,
+                                   self.validate_labels_pl: validate_labels})
                     # global_step will be found automatically.
                     sv.summary_computed(sess, summary, global_step=global_step_val)
                 else:
-                    sess.run(train_op)
+                    sess.run(self.train_op)
 
             logging.info("Exited training loop.")
-            self.weights, self.biases = sess.run([weights, biases])
 
         # Session will close automatically when with clause exits.
         # sess.close()
