@@ -79,7 +79,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
                                           batch_size=batch_size, num_readers=2 * num_readers)
 
     # Sample validate set for line search in linear classifier or logistic regression early stopping.
-    _, validate_data, validate_labels, _ = random_sample(0.1, mask=(False, True, True, False),
+    _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
                                                          data_pipeline=validate_data_pipeline)
 
     # Set pos_weights for extremely imbalanced situation in one-vs-all classifiers.
@@ -156,10 +156,6 @@ if __name__ == '__main__':
     flags.DEFINE_string('validate_data_pattern',
                         '/Users/Sophie/Documents/youtube-8m-data/validate/validateq*.tfrecord',
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
-
-    flags.DEFINE_string('test_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/test/test4*.tfrecord',
-                        'Test data pattern, to be specified when making predictions.')
 
     # mean_rgb,mean_audio
     flags.DEFINE_string('feature_names', 'mean_audio', 'Features to be used, separated by ,.')
