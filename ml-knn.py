@@ -273,7 +273,6 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
     tol_num_examples_processed = 0
 
     try:
-
         while not coord.should_stop():
             # Run training steps or whatever.
             start_time = time.time()
@@ -314,6 +313,18 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
             logging.info('Batch processing step {}, elapsed {} s, processed {} examples in total'.format(
                 global_step_val, now - start_time, tol_num_examples_processed))
 
+            # Save results regularly.
+            if global_step_val % 4 == 0:
+                # Save models parameters.
+                for k, count, counter_count in zip(k_list, count_list, counter_count_list):
+                    # Compute posterior probabilities.
+                    pos_prob_positive = (smooth_para + count) / (smooth_para * (k + 1) + count.sum(axis=0))
+                    pos_prob_negative = (smooth_para + counter_count) / (
+                        smooth_para * (k + 1) + counter_count.sum(axis=0))
+
+                    # Write to files for future use.
+                    save_posterior_prob(count, counter_count, pos_prob_positive, pos_prob_negative, k, model_dir)
+
     except tf.errors.OutOfRangeError:
         logging.info('Done training -- one epoch limit reached.')
     finally:
@@ -324,7 +335,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
     coord.join(threads)
     sess.close()
 
-    # Save models parameters.
+    # Save models parameters after passing all examples.
     for k, count, counter_count in zip(k_list, count_list, counter_count_list):
         # Compute posterior probabilities.
         pos_prob_positive = (smooth_para + count) / (smooth_para * (k + 1) + count.sum(axis=0))
