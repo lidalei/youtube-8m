@@ -393,7 +393,7 @@ class LogisticRegression(object):
             if self.tr_data_fn is None:
                 transformed_validate_data = tf.identity(validate_data_pl)
             else:
-                transformed_validate_data = self.tr_data_fn(validate_data_pl, **self.tr_data_paras)
+                transformed_validate_data = self.tr_data_fn(validate_data_pl, reuse=True, **self.tr_data_paras)
 
             validate_pred = tf.add(tf.matmul(transformed_validate_data, weights), biases, name='validate_pred')
 
@@ -531,8 +531,7 @@ class LogisticRegression(object):
             if self.tr_data_paras is None:
                 self.tr_data_paras = dict()
             else:
-                reshape = self.tr_data_paras['reshape']
-                if reshape:
+                if ('reshape' in self.tr_data_paras) and (self.tr_data_paras['reshape'] is True):
                     self.feature_size = self.tr_data_paras['size']
                     logging.warn('Data transform changes the features size to {}.'.format(
                         self.feature_size))
@@ -609,7 +608,7 @@ class LogisticRegression(object):
 
                     if validate_fn is not None:
                         validate_per = validate_fn(predictions=validate_pred_prob_val, labels=validate_labels)
-                        logging.info('Step {}, {}: {}.'.format(global_step_val, validate_fn, validate_per))
+                        logging.info('Step {}, {}: {}.'.format(global_step_val, validate_fn.func_name, validate_per))
                 elif step % 100 == 0:
                     # Computing validate summary needs validate set.
                     _, summary, global_step_val = sess.run(

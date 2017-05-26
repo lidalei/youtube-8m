@@ -220,11 +220,11 @@ class KMeans(object):
         sess = tf.Session(graph=self.graph)
         sess.run(self.init_op)
 
-        # initialize centers variable in tf graph.
+        # initialize current centers variable in tf graph.
         sess.run(self.current_centers_init_op,
                  feed_dict={self.current_centers_initializer: self.current_centers})
 
-        # initializer per_clu_sum.
+        # initializer per_clu_sum in tf graph.
         sess.run(self.per_clu_sum_init_op,
                  feed_dict={self.per_clu_sum_initializer: np.zeros_like(self.current_centers)})
 
@@ -324,7 +324,7 @@ def mini_batch_kmeans():
     raise NotImplementedError('Not implemented. Batch kmeans works fast enough now.')
 
 
-def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosine',
+def initialize(num_centers_ratio, data_pipeline, method=None, metric='cosine',
                max_iter=100, tol=0.01, scaling_method=1, alpha=1.0, p=3):
     """
     This functions initializes representative prototypes (RBF centers) c and scaling factors sigma.
@@ -372,7 +372,7 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
     # Sample features only.
     _, centers, _, _ = random_sample(num_centers_ratio, mask=(False, True, False, False),
                                      data_pipeline=data_pipeline)
-    logging.info('Sampled {} centers totally.'.format(len(centers)))
+    logging.info('Sampled {} centers totally.'.format(centers.shape[0]))
     logging.debug('Randomly selected centers: {}'.format(centers))
 
     # Used in scaling method 4. Average distance of each point with its cluster center.
@@ -397,8 +397,8 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
         raise ValueError('Only None (randomly select examples), online, kmeans are supported.')
 
     # Compute scaling factors based on these centers.
-    num_centers = len(centers)
-    sigmas = []
+    num_centers = centers.shape[0]
+    sigmas = None
     if scaling_method == 1:
         # Equation 27.
         pairwise_distances = sci_distance.pdist(centers, metric=metric)
@@ -416,7 +416,7 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
             dis_fn = sci_distance.euclidean
         else:
             dis_fn = sci_distance.cosine
-
+        sigmas = []
         for c in centers:
             distances = [dis_fn(c, _c) for _c in centers]
             # The distance between c and itself is zero and is in the left partition.
@@ -489,21 +489,36 @@ def rbf_transform(data, centers, sigmas, metric='cosine', **kwargs):
         raise ValueError('Only supported cosine and euclidean. Passed {}.'.format(metric))
 
     with tf.name_scope('rbf_transform_{}'.format(metric)):
-        if metric == 'cosine':
-            normalized_centers = centers / np.clip(
-                np.linalg.norm(centers, axis=-1, keepdims=True), 1e-6, np.PINF)
-            # prototypes are trainable.
-            prototypes = tf.Variable(initial_value=normalized_centers, dtype=tf.float32, name='prototypes')
+        if ('reuse' in kwargs) and (kwargs['reuse'] is True):
+            # Get from collection.
+            prototypes = tf.get_collection('prototypes')[0]
+            basis_f_mul = tf.get_collection('basis_f_mul')[0]
         else:
-            # prototypes are trainable.
-            prototypes = tf.Variable(initial_value=centers, dtype=tf.float32, name='prototypes')
+            if metric == 'cosine':
+                normalized_centers = centers / np.clip(
+                    np.linalg.norm(centers, axis=-1, keepdims=True), 1e-6, np.PINF)
+                # prototypes are trainable.
+                prototypes = tf.Variable(initial_value=normalized_centers, trainable=False,
+                                         dtype=tf.float32, name='prototypes')
+            else:
+                # prototypes are trainable.
+                prototypes = tf.Variable(initial_value=centers, trainable=False,
+                                         dtype=tf.float32, name='prototypes')
 
-        neg_two_times_sq_sigmas = np.multiply(-2.0, np.square(sigmas))
-        expanded_neg_two_times_sq_sigmas = np.expand_dims(neg_two_times_sq_sigmas, axis=0)
-        # [-2.0 * sigmas ** 2], basis function denominators.
-        neg_basis_f_deno = tf.Variable(initial_value=expanded_neg_two_times_sq_sigmas, dtype=tf.float32,
-                                       name='neg_basis_f_deno')
+            neg_twice_sq_sigmas = np.multiply(-2.0, np.square(sigmas))
+            inv_neg_twice_sq_sigmas = np.divide(1.0, neg_twice_sq_sigmas)
+            expanded_inv_neg_twice_sq_sigmas = np.expand_dims(inv_neg_twice_sq_sigmas, axis=0)
+            # [-2.0 * sigmas ** 2], basis function denominators.
+            basis_f_mul = tf.Variable(initial_value=expanded_inv_neg_twice_sq_sigmas, trainable=False,
+                                      dtype=tf.float32, name='basis_f_mul')
+            # Add to collection for future use, e.g., validate and train share the same variables.
+            tf.add_to_collection('prototypes', prototypes)
+            tf.add_to_collection('basis_f_mul', basis_f_mul)
 
+            # For debug.
+            tf.summary.histogram('prototypes', prototypes)
+            tf.summary.histogram('basis_f_mul', basis_f_mul)
+        # Do transform.
         if metric == 'cosine':
             normalized_data = tf.nn.l2_normalize(data, -1)
             cosine_sim = tf.matmul(normalized_data, prototypes, transpose_b=True)
@@ -520,7 +535,7 @@ def rbf_transform(data, centers, sigmas, metric='cosine', **kwargs):
             # Shape [batch_size, num_initial_centers]. negative === -.
             squared_dist = tf.reduce_sum(squared_sub, axis=-1, name='euclidean_square_dist')
 
-        rbf_fs = tf.exp(tf.divide(squared_dist, neg_basis_f_deno), name='basis_function')
+        rbf_fs = tf.exp(tf.multiply(squared_dist, basis_f_mul), name='basis_function')
 
         return rbf_fs
 
@@ -628,10 +643,6 @@ if __name__ == '__main__':
                         '/Users/Sophie/Documents/youtube-8m-data/validate/validate*.tfrecord',
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
-    flags.DEFINE_string('test_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/test/test4*.tfrecord',
-                        'Test data pattern, to be specified when making predictions.')
-
     # mean_rgb,mean_audio
     flags.DEFINE_string('feature_names', 'mean_audio', 'Features to be used, separated by ,.')
 
@@ -639,16 +650,14 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
 
     # Set by the memory limit (52GB).
-    flags.DEFINE_integer('batch_size', 2048, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_bool('start_new_model', True, 'To start a new model or restore from output dir.')
 
-    flags.DEFINE_float('num_centers_ratio', 0.0001, 'The number of centers in RBF network.')
+    flags.DEFINE_float('num_centers_ratio', 0.001, 'The number of centers in RBF network.')
 
-    flags.DEFINE_string('dist_metric', 'cosine', 'Distance metric, cosine or euclidean.')
-
-    flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
+    flags.DEFINE_string('dist_metric', 'euclidean', 'Distance metric, cosine or euclidean.')
 
     flags.DEFINE_float('init_learning_rate', 0.01, 'Float variable to indicate initial learning rate.')
 
