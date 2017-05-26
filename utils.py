@@ -20,6 +20,7 @@ import tensorflow as tf
 from tensorflow import logging, gfile
 import pickle
 from os.path import join as path_join
+from eval_util import calculate_gap
 
 # Used to locate constants dir.
 from inspect import getsourcefile
@@ -616,6 +617,17 @@ def _get_input_data_tensors(reader=None, data_pattern=None, batch_size=2048, num
                                     enqueue_many=True))
 
         return video_id_batch, video_batch, video_labels_batch, num_frames_batch
+
+
+def gap_fn(predictions=None, labels=None):
+    """
+    Make predictions and labels to be specified explicitly.
+    :param predictions: Model output.
+    :param labels: Targets or ground truth.
+    :return: GAP - global average precision.
+    """
+    return calculate_gap(predictions, labels)
+
 
 # if __name__ == '__main__':
     # features_mean = partial_data_features_mean()

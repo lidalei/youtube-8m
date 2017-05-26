@@ -15,7 +15,7 @@ import numpy as np
 from readers import get_reader
 from utils import DataPipeline, random_sample, load_sum_labels, load_features_mean_var
 from tensorflow import flags, logging, app
-from eval_util import calculate_gap
+from utils import gap_fn
 from linear_model import LinearClassifier, LogisticRegression
 
 from os.path import join as path_join
@@ -26,16 +26,6 @@ NUM_TRAIN_EXAMPLES = 4906660
 # TODO
 NUM_VALIDATE_EXAMPLES = None
 NUM_TEST_EXAMPLES = 700640
-
-
-def gap_fn(predictions=None, labels=None):
-    """
-    Make predictions and labels to be specified explicitly.
-    :param predictions: Model output.
-    :param labels: Targets or ground truth.
-    :return: GAP - global average precision.
-    """
-    return calculate_gap(predictions, labels)
 
 
 def standard_scale(data, mean=None, variance=None, **kwargs):
