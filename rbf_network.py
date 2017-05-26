@@ -96,8 +96,7 @@ class KMeans(object):
             raise ValueError('Failed to initialize a Tensorflow Graph to perform k-means.')
 
         # clustering objective function.
-        self.obj = np.PINF
-        self.mean_dist = None
+        self.mean_dist = np.PINF
         self.per_clu_mean_dist = None
 
     def build_iter_graph(self):
@@ -280,9 +279,13 @@ class KMeans(object):
         """
         for iter_count in xrange(max_iter):
             start_time = time.time()
-            new_centers, new_obj, self.per_clu_mean_dist = self.kmeans_iter()
+            new_centers, new_mean_dist, new_per_clu_mean_dist = self.kmeans_iter()
             print('The {}-th iteration took {} s.'.format(iter_count + 1, time.time() - start_time))
 
+            # There are empty centers (clusters) being removed.
+            need_rebuild_graph = new_centers.shape[0] != self.current_centers.shape[0]
+
+            # Update current centers and mean distance per cluster.
             # Normalize current centers if distance metric is cosine.
             if self.metric == 'cosine':
                 self.current_centers = new_centers / np.clip(
@@ -290,14 +293,31 @@ class KMeans(object):
             else:
                 self.current_centers = new_centers
 
-            if not np.isinf(self.obj) and (self.obj - new_obj) / self.obj < tol:
-                logging.info('Done k-means clustering.')
-                break
+            self.per_clu_mean_dist = new_per_clu_mean_dist
 
-            self.obj = new_obj
+            # Converged, break!
+            if not np.isinf(self.mean_dist) and (self.mean_dist - new_mean_dist) / self.mean_dist < tol:
+                # Update current objective function value.
+                self.mean_dist = new_mean_dist
+                logging.info('Done k-means clustering. Final centers have shape {}. Final mean dist is {}.'.format(
+                    self.current_centers.shape, self.mean_dist))
+                break
+            else:
+                # Update current objective function value.
+                self.mean_dist = new_mean_dist
+
+            if need_rebuild_graph:
+                # Re-build graph using updated current centers.
+                self.build_iter_graph()
+                initialize_success = self.check_graph_initialized()
+                if initialize_success:
+                    logging.info('Succeeded re-initializing a Tensorflow graph to perform k-means.')
+                else:
+                    raise ValueError('Failed to re-initialize a Tensorflow Graph to perform k-means.')
 
             logging.debug('new_centers: {}'.format(self.current_centers))
-            logging.info('New mean point-center distance: {}'.format(self.obj))
+            logging.info('new_centers shape: {}'.format(self.current_centers.shape))
+            logging.info('New mean point-center distance: {}'.format(self.mean_dist))
 
 
 def mini_batch_kmeans():
@@ -532,10 +552,6 @@ def main(unused_argv):
     train_epochs = FLAGS.train_epochs
     l2_reg_rate = FLAGS.l2_reg_rate
 
-    # DataPipeline consists of reader, batch size, no. of readers and data pattern.
-    train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
-                                       batch_size=batch_size, num_readers=num_readers)
-
     # ....Start rbf network...
     logging.info('Entering rbf network...')
 
@@ -543,25 +559,30 @@ def main(unused_argv):
     start_new_model = start_new_model or (not tf.gfile.Exists(output_dir))
 
     if start_new_model:
+        # PHASE ONE - selecting prototypes c, computing scaling factors sigma.
         # num_centers = FLAGS.num_centers
         # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
+        # DataPipeline consists of reader, batch size, no. of readers and data pattern.
+        _train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
+                                            batch_size=8192, num_readers=4)
+
         # metric is euclidean or cosine. If cosine, alpha=1.0, otherwise can be less than 1.0.
         if 'cosine' == dist_metric:
             alpha = 1.0
         else:
             alpha = 1.0
-        centers, sigmas = initialize(num_centers_ratio, data_pipeline=train_data_pipeline,
+        centers, sigmas = initialize(num_centers_ratio, data_pipeline=_train_data_pipeline,
                                      method='kmeans', metric=dist_metric, scaling_method=4, alpha=alpha)
 
+        # PHASE TWO - computing linear regression weights and biases.
         num_centers = centers.shape[0]
-
         tr_data_fn = rbf_transform
         tr_data_paras = {'centers': centers, 'sigmas': sigmas, 'metric': dist_metric,
                          'reshape': True, 'size': num_centers}
 
         # Call linear classification to get a good initial values of weights and biases.
         linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
-        linear_clf.fit(data_pipeline=train_data_pipeline,
+        linear_clf.fit(data_pipeline=_train_data_pipeline,
                        tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
                        l2_regs=0.01, line_search=False)
 
@@ -570,10 +591,15 @@ def main(unused_argv):
         linear_clf_weights, linear_clf_biases = None, None
         tr_data_fn, tr_data_paras = None, None
 
+    # PHASE THREE - fine tuning prototypes c, scaling factors sigma and weights and biases.
+    # DataPipeline consists of reader, batch size, no. of readers and data pattern.
+    train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
+                                       batch_size=batch_size, num_readers=num_readers)
+
     # Validate set is not stored in graph or meta data. Re-create it any way.
     # Sample validate set for logistic regression early stopping.
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
-                                          batch_size=batch_size, num_readers=num_readers)
+                                          batch_size=8192, num_readers=4)
 
     _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
                                                          data_pipeline=validate_data_pipeline)
