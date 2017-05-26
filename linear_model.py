@@ -164,7 +164,7 @@ class LinearClassifier(object):
                 weights = weights_biases[:-1]
                 biases = weights_biases[-1]
 
-            with tf.name_scope('validate_loss'):
+            with tf.name_scope('validate_loss'), tf.device('/cpu:0'):
                 validate_x_initializer = tf.placeholder(tf.float32, shape=validate_data.shape)
                 validate_x = tf.Variable(initial_value=validate_x_initializer, trainable=False, collections=[],
                                          name='validate_data')
@@ -384,7 +384,7 @@ class LogisticRegression(object):
 
             tf.summary.scalar('learning_rate', adap_learning_rate)
 
-        with tf.name_scope('validate'):
+        with tf.name_scope('validate'), tf.device('/cpu:0'):
             validate_data_pl = tf.placeholder(tf.float32, shape=[None, self.raw_feature_size], name='data')
             validate_labels_pl = tf.placeholder(tf.bool, shape=[None, self.num_classes], name='labels')
 
