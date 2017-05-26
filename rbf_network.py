@@ -23,14 +23,12 @@ import time
 
 from linear_model import LinearClassifier, LogisticRegression
 from readers import get_reader
-from utils import get_input_data_tensors, DataPipeline, random_sample
+from utils import get_input_data_tensors, DataPipeline, random_sample, gap_fn
 from tensorflow import flags, logging, app
 
 from os.path import join as path_join
 import numpy as np
 import scipy.spatial.distance as sci_distance
-
-from bootstrap_inference import BootstrapInference
 
 
 FLAGS = flags.FLAGS
@@ -93,9 +91,9 @@ class KMeans(object):
 
         initialize_success = self.check_graph_initialized()
         if initialize_success:
-            logging.info('Succeeded initializing a Tensorflow graph.')
+            logging.info('Succeeded initializing a Tensorflow graph to perform k-means.')
         else:
-            raise ValueError('Failed to initialize a Tensorflow Graph.')
+            raise ValueError('Failed to initialize a Tensorflow Graph to perform k-means.')
 
         # clustering objective function.
         self.obj = np.PINF
@@ -116,7 +114,7 @@ class KMeans(object):
             current_centers = tf.Variable(initial_value=current_centers_initializer,
                                           trainable=False, collections=[], name='current_centers')
 
-            # Objective function. TODO, avoid overflow in initial iteration.
+            # Objective function. POSSIBLE ISSUE, overflow in initial iteration.
             total_dist = tf.Variable(initial_value=0.0, dtype=tf.float32, name='total_distance')
             # Define sum per clu as Variable and use placeholder to hold large number of centers.
             per_clu_sum_initializer = tf.placeholder(tf.float32, shape=self.current_centers.shape)
@@ -234,8 +232,6 @@ class KMeans(object):
         # Start input enqueue threads.
         coord = tf.train.Coordinator()
         threads = tf.train.start_queue_runners(sess=sess, coord=coord)
-
-        # TODO, deal with empty cluster situation.
         try:
             while not coord.should_stop():
                 _ = sess.run(self.update_non_op)
@@ -255,18 +251,33 @@ class KMeans(object):
         logging.info('Exiting k-means iter ...')
         sess.close()
 
-        # Expand to each feature.
-        accum_per_clu_count_per_feat = np.expand_dims(final_per_clu_count, axis=1)
-        total_num_points = np.sum(final_per_clu_count)
+        # Deal with empty cluster situation.
+        nonzero_indices = np.nonzero(final_per_clu_count)
+        per_nonempty_clu_count = final_per_clu_count[nonzero_indices]
+        # Expand to each feature to make use of broadcasting.
+        per_nonempty_clu_feat_count = np.expand_dims(per_nonempty_clu_count, axis=1)
+        total_num_points = np.sum(per_nonempty_clu_count)
+
+        per_nonempty_clu_sum = final_per_clu_sum[nonzero_indices]
+        per_nonempty_clu_total_dist = final_per_clu_total_dist[nonzero_indices]
+
         if self.return_mean_clu_dist:
             # Numpy array divide element-wisely.
-            return ((final_per_clu_sum / accum_per_clu_count_per_feat), final_total_dist / total_num_points,
-                    final_per_clu_total_dist / final_per_clu_count)
+            per_nonempty_clu_mean_dist = per_nonempty_clu_total_dist / per_nonempty_clu_count
         else:
-            # Numpy array divide element-wisely.
-            return (final_per_clu_sum / accum_per_clu_count_per_feat), final_total_dist / total_num_points, None
+            per_nonempty_clu_mean_dist = None
+
+        # Numpy array divide element-wisely.
+        return ((per_nonempty_clu_sum / per_nonempty_clu_feat_count), final_total_dist / total_num_points,
+                per_nonempty_clu_mean_dist)
 
     def fit(self, max_iter=100, tol=0.01):
+        """
+        This function works as sk-learn estimator fit.
+        :param max_iter: 
+        :param tol: Percentage not improved one iteration, stop iteration.
+        :return: Update current centers and current objective function value (member variables).
+        """
         for iter_count in xrange(max_iter):
             start_time = time.time()
             new_centers, new_obj, self.per_clu_mean_dist = self.kmeans_iter()
@@ -294,7 +305,7 @@ def mini_batch_kmeans():
 
 
 def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosine',
-               max_iter=100, tol=0.01, scaling_method=1, alpha=0.1, p=3):
+               max_iter=100, tol=0.01, scaling_method=1, alpha=1.0, p=3):
     """
     This functions initializes representative prototypes (RBF centers) c and scaling factors sigma.
 
@@ -406,7 +417,7 @@ def initialize(num_centers_ratio, data_pipeline=None, method=None, metric='cosin
 
             logging.info('Compute mean distance per cluster using kmeans or online kmeans.')
         else:
-            logging.info('Reuse results from kmeans or online kmeans.')
+            logging.info('Reuse mean distance per cluster computed in kmeans or online kmeans.')
 
         sigmas = alpha * per_clu_mean_dist
     elif scaling_method == 5:
@@ -474,8 +485,8 @@ def rbf_transform(data, centers, sigmas, metric='cosine', **kwargs):
                                        name='neg_basis_f_deno')
 
         if metric == 'cosine':
-            normalized_video_batch = tf.nn.l2_normalize(data, -1)
-            cosine_sim = tf.matmul(normalized_video_batch, prototypes, transpose_b=True)
+            normalized_data = tf.nn.l2_normalize(data, -1)
+            cosine_sim = tf.matmul(normalized_data, prototypes, transpose_b=True)
             squared_dist = tf.square(tf.subtract(1.0, cosine_sim), name='cosine_square_dist')
         else:
             # Make use of broadcasting feature.
@@ -485,7 +496,8 @@ def rbf_transform(data, centers, sigmas, metric='cosine', **kwargs):
             sub = tf.subtract(expanded_video_batch, expanded_centers)
             # element-wise square.
             squared_sub = tf.square(sub)
-            # Compute distances with centers video-wisely. Shape [batch_size, num_initial_centers]. negative === -.
+            # Compute distances with centers video-wisely.
+            # Shape [batch_size, num_initial_centers]. negative === -.
             squared_dist = tf.reduce_sum(squared_sub, axis=-1, name='euclidean_square_dist')
 
         rbf_fs = tf.exp(tf.divide(squared_dist, neg_basis_f_deno), name='basis_function')
@@ -493,10 +505,15 @@ def rbf_transform(data, centers, sigmas, metric='cosine', **kwargs):
         return rbf_fs
 
 
-def rbf():
+def main(unused_argv):
     """
     Train the rbf network.
     """
+    logging.set_verbosity(logging.INFO)
+
+    start_new_model = FLAGS.start_new_model
+    output_dir = FLAGS.output_dir
+
     # The ratio of examples to sample as centers (prototypes).
     num_centers_ratio = FLAGS.num_centers_ratio
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
@@ -515,34 +532,45 @@ def rbf():
     train_epochs = FLAGS.train_epochs
     l2_reg_rate = FLAGS.l2_reg_rate
 
-    output_dir = FLAGS.output_dir
-
     # DataPipeline consists of reader, batch size, no. of readers and data pattern.
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
                                        batch_size=batch_size, num_readers=num_readers)
 
     # ....Start rbf network...
     logging.info('Entering rbf network...')
-    # num_centers = FLAGS.num_centers
-    # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
-    # metric is euclidean or cosine.
-    centers, sigmas = initialize(num_centers_ratio, data_pipeline=train_data_pipeline,
-                                 method='kmeans', metric=dist_metric, scaling_method=4)
 
-    num_centers = centers.shape[0]
+    # If start a new model or output dir does not exist, truly start a new model.
+    start_new_model = start_new_model or (not tf.gfile.Exists(output_dir))
 
-    tr_data_fn = rbf_transform
-    tr_data_paras = {'centers': centers, 'sigmas': sigmas, 'metric': dist_metric,
-                     'reshape': True, 'size': num_centers}
+    if start_new_model:
+        # num_centers = FLAGS.num_centers
+        # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
+        # metric is euclidean or cosine. If cosine, alpha=1.0, otherwise can be less than 1.0.
+        if 'cosine' == dist_metric:
+            alpha = 1.0
+        else:
+            alpha = 1.0
+        centers, sigmas = initialize(num_centers_ratio, data_pipeline=train_data_pipeline,
+                                     method='kmeans', metric=dist_metric, scaling_method=4, alpha=alpha)
 
-    # Call linear classification to get a good initial values of weights and biases.
-    linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
-    linear_clf.fit(data_pipeline=train_data_pipeline,
-                   tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
-                   l2_regs=0.01, line_search=False)
+        num_centers = centers.shape[0]
 
-    linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
+        tr_data_fn = rbf_transform
+        tr_data_paras = {'centers': centers, 'sigmas': sigmas, 'metric': dist_metric,
+                         'reshape': True, 'size': num_centers}
 
+        # Call linear classification to get a good initial values of weights and biases.
+        linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
+        linear_clf.fit(data_pipeline=train_data_pipeline,
+                       tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
+                       l2_regs=0.01, line_search=False)
+
+        linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
+    else:
+        linear_clf_weights, linear_clf_biases = None, None
+        tr_data_fn, tr_data_paras = None, None
+
+    # Validate set is not stored in graph or meta data. Re-create it any way.
     # Sample validate set for logistic regression early stopping.
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
                                           batch_size=batch_size, num_readers=num_readers)
@@ -551,21 +579,15 @@ def rbf():
                                                          data_pipeline=validate_data_pipeline)
 
     log_reg_clf = LogisticRegression(logdir=path_join(output_dir, 'log_reg'))
-    log_reg_clf.fit(train_data_pipeline=train_data_pipeline, start_new_model=True,
+    log_reg_clf.fit(train_data_pipeline=train_data_pipeline, start_new_model=start_new_model,
                     tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
-                    validate_set=(validate_data, validate_labels),
+                    validate_set=(validate_data, validate_labels), validate_fn=gap_fn,
                     init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
                     epochs=train_epochs, l2_reg_rate=l2_reg_rate,
                     initial_weights=linear_clf_weights, initial_biases=linear_clf_biases)
 
     # ....Exit rbf network...
     logging.info('Exit rbf network.')
-
-
-def main(unused_argv):
-    logging.set_verbosity(logging.INFO)
-
-    rbf()
 
 
 if __name__ == '__main__':
@@ -593,6 +615,8 @@ if __name__ == '__main__':
     # Set by the memory limit (52GB).
     flags.DEFINE_integer('batch_size', 2048, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
+
+    flags.DEFINE_bool('start_new_model', True, 'To start a new model or restore from output dir.')
 
     flags.DEFINE_float('num_centers_ratio', 0.0001, 'The number of centers in RBF network.')
 
