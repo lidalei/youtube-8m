@@ -590,7 +590,7 @@ class LogisticRegression(object):
 
         with sv.managed_session() as sess:
             logging.info("Entering training loop...")
-            for step in xrange(1, self.max_train_steps):
+            for step in xrange(0, self.max_train_steps):
                 if sv.should_stop():
                     # Save the final model and break.
                     self.saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
