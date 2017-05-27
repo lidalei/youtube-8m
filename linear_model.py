@@ -316,7 +316,8 @@ class LogisticRegression(object):
                                   dtype=tf.float32, name='weights')
         else:
             weights = tf.Variable(initial_value=self.initial_weights, dtype=tf.float32, name='weights')
-
+        # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
+        tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
         tf.summary.histogram('model/weights', weights)
 
         if self.initial_biases is None:
@@ -367,17 +368,21 @@ class LogisticRegression(object):
 
             # Add regularization.
             reg_losses = []
+            # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
+            to_regularize = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
             if self.l1_reg_rate:
-                weights_l1_loss = tf.reduce_sum(tf.abs(weights), name='weights_l1_loss')
-                reg_losses.append(tf.multiply(self.l1_reg_rate, weights_l1_loss))
-                tf.summary.scalar('loss/weights_l1_loss', weights_l1_loss)
+                l1_reg_losses = [tf.reduce_sum(tf.abs(w)) for w in to_regularize]
+                l1_reg_loss = tf.add_n(l1_reg_losses, name='l1_reg_loss')
+                tf.summary.scalar('loss/l1_reg_loss', l1_reg_loss)
+                reg_losses.append(tf.multiply(self.l1_reg_rate, l1_reg_loss))
 
             if self.l2_reg_rate:
-                weights_l2_loss = tf.reduce_sum(tf.square(weights), name='weights_l2_loss')
-                reg_losses.append(tf.multiply(self.l2_reg_rate, weights_l2_loss))
-                tf.summary.scalar('loss/weights_l2_loss', weights_l2_loss)
+                l2_reg_losses = [tf.reduce_sum(tf.square(w)) for w in to_regularize]
+                l2_reg_loss = tf.add_n(l2_reg_losses, name='l2_loss')
+                tf.summary.scalar('loss/l2_reg_loss', l2_reg_loss)
+                reg_losses.append(tf.multiply(self.l2_reg_rate, l2_reg_loss))
 
-            reg_loss = tf.add_n(reg_losses, name='weights_reg_loss')
+            reg_loss = tf.add_n(reg_losses, name='reg_loss')
 
             final_loss = tf.add(loss, reg_loss, name='final_loss')
 
