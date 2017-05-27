@@ -46,7 +46,7 @@ def standard_scale(data, mean=None, variance=None, **kwargs):
         standardized_data = tf.nn.batch_normalization(data,
                                                       mean=features_mean, variance=features_var,
                                                       offset=None, scale=None, variance_epsilon=1e-12,
-                                                      name='standardized_video_batch')
+                                                      name='standardized')
         return standardized_data
 
 

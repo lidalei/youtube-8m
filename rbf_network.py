@@ -579,11 +579,11 @@ def main(unused_argv):
         # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
         # DataPipeline consists of reader, batch size, no. of readers and data pattern.
         _train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
-                                            batch_size=8192, num_readers=4)
+                                            batch_size=batch_size, num_readers=num_readers)
 
         # metric is euclidean or cosine. If cosine, alpha=1.0, otherwise can be less than 1.0.
         if 'cosine' == dist_metric:
-            alpha = 1.0
+            alpha = 10.0
         else:
             alpha = 1.0
         centers, sigmas = initialize(num_centers_ratio, data_pipeline=_train_data_pipeline,
@@ -614,7 +614,7 @@ def main(unused_argv):
     # Validate set is not stored in graph or meta data. Re-create it any way.
     # Sample validate set for logistic regression early stopping.
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
-                                          batch_size=8192, num_readers=4)
+                                          batch_size=batch_size, num_readers=num_readers)
 
     _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
                                                          data_pipeline=validate_data_pipeline)
@@ -636,11 +636,11 @@ if __name__ == '__main__':
 
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/train/train*.tfrecord',
+                        '/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord',
                         'File glob for the training dataset.')
 
     flags.DEFINE_string('validate_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/validate/validate*.tfrecord',
+                        '/Users/Sophie/Documents/youtube-8m-data/validate/validateq*.tfrecord',
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     # mean_rgb,mean_audio
@@ -657,7 +657,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('num_centers_ratio', 0.001, 'The number of centers in RBF network.')
 
-    flags.DEFINE_string('dist_metric', 'euclidean', 'Distance metric, cosine or euclidean.')
+    flags.DEFINE_string('dist_metric', 'cosine', 'Distance metric, cosine or euclidean.')
 
     flags.DEFINE_float('init_learning_rate', 0.01, 'Float variable to indicate initial learning rate.')
 
