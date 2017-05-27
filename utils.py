@@ -314,7 +314,7 @@ def restore_posterior_prob(k, folder=''):
 DataPipeline = namedtuple('DataPipeline', ['reader', 'data_pattern', 'batch_size', 'num_readers'])
 
 
-def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=None):
+def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=None, name_scope='rnd_sample'):
     """
     Randomly sample sample_ratio examples from data that specified reader by and data_pattern.
     Args:
@@ -324,6 +324,7 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
             data_pattern, File Glob of data.
             batch_size, The size of a batch. The last a few batches might have less examples.
             num_readers, How many IO threads to enqueue example queue.
+        name_scope: To distinguish from other tf graph part.
     Returns:
         Roughly the ratio of examples will be returned. If a part is not demanded, the corresponding part is None.
     Raises:
@@ -341,7 +342,7 @@ def random_sample(sample_ratio, mask=(True, True, True, True), data_pipeline=Non
     # Create the graph to traverse all data once.
     with tf.Graph().as_default() as graph:
         video_id_batch, video_batch, video_labels_batch, num_frames_batch = (
-            get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='rnd_sample'))
+            get_input_data_tensors(data_pipeline, num_epochs=1, name_scope=name_scope))
 
         num_batch_videos = tf.shape(video_batch)[0]
         rnd_nums = tf.random_uniform([num_batch_videos])

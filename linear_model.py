@@ -271,6 +271,7 @@ class LogisticRegression(object):
         self.decay_steps = 40000
         self.decay_rate = 0.95
         self.epochs = None
+        self.l1_reg_rate = None
         self.l2_reg_rate = 0.01
         self.pos_weights = None
         self.initial_weights = None
@@ -362,15 +363,23 @@ class LogisticRegression(object):
                 # Mean over batch.
                 loss = tf.reduce_mean(loss_per_ex, name='x_entropy')
 
-            # Add regularization.
-            weights_l2_loss_per_label = tf.reduce_sum(tf.square(weights), axis=0, name='weights_l2_loss_per_label')
-            weights_l2_loss = tf.reduce_sum(weights_l2_loss_per_label, name='weights_l2_loss')
-
-            final_loss = tf.add(loss, tf.multiply(self.l2_reg_rate, weights_l2_loss), name='final_loss')
-
-            tf.summary.histogram('loss/weights_l2_loss_per_label', weights_l2_loss_per_label)
-            tf.summary.scalar('loss/weights_l2_loss', weights_l2_loss)
             tf.summary.scalar('loss/xentropy', loss)
+
+            # Add regularization.
+            reg_losses = []
+            if self.l1_reg_rate:
+                weights_l1_loss = tf.reduce_sum(tf.abs(weights), name='weights_l1_loss')
+                reg_losses.append(tf.multiply(self.l1_reg_rate, weights_l1_loss))
+                tf.summary.scalar('loss/weights_l1_loss', weights_l1_loss)
+
+            if self.l2_reg_rate:
+                weights_l2_loss = tf.reduce_sum(tf.square(weights), name='weights_l2_loss')
+                reg_losses.append(tf.multiply(self.l2_reg_rate, weights_l2_loss))
+                tf.summary.scalar('loss/weights_l2_loss', weights_l2_loss)
+
+            reg_loss = tf.add_n(reg_losses, name='weights_reg_loss')
+
+            final_loss = tf.add(loss, reg_loss, name='final_loss')
 
         with tf.name_scope('optimization'):
             # Decayed learning rate.
@@ -442,8 +451,8 @@ class LogisticRegression(object):
     def fit(self, train_data_pipeline, start_new_model=False,
             tr_data_fn=None, tr_data_paras=None,
             validate_set=None, validate_fn=None,
-            bootstrap=False, init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
-            epochs=None, l2_reg_rate=0.01, pos_weights=None, initial_weights=None, initial_biases=None):
+            bootstrap=False, init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95, epochs=None,
+            l1_reg_rate=None, l2_reg_rate=0.01, pos_weights=None, initial_weights=None, initial_biases=None):
         """
         Logistic regression fit function.
         Args:
@@ -458,6 +467,7 @@ class LogisticRegression(object):
             decay_steps: Decayed gradient descent parameter.
             decay_rate: Decayed gradient descent parameter.
             epochs: Maximal epochs to use.
+            l1_reg_rate: None, not impose l1 regularization. 
             l2_reg_rate: l2 regularization rate.
             pos_weights: For imbalanced binary classes. Here, num_pos << num_neg, the weights should be > 1.0.
                 If None, treated as 1.0 for all binary classifiers.
@@ -486,6 +496,7 @@ class LogisticRegression(object):
         self.decay_steps = decay_steps
         self.decay_rate = decay_rate
         self.epochs = epochs
+        self.l1_reg_rate = l1_reg_rate
         self.l2_reg_rate = l2_reg_rate
         self.pos_weights = pos_weights
         self.initial_weights = initial_weights
@@ -562,31 +573,34 @@ class LogisticRegression(object):
                     self.saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
                     break
 
-                if step % 100 == 0:
+                if step % 200 == 0:
+                    run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
+                    run_metadata = tf.RunMetadata()
+
                     _, summary, global_step_val = sess.run(
-                        [self.train_op, self.summary_op, self.global_step])
+                        [self.train_op, self.summary_op, self.global_step],
+                        options=run_options, run_metadata=run_metadata)
                     sv.summary_computed(sess, summary, global_step=global_step_val)
 
-                    if step % 1000 == 0:
-                        # Sample validate set.
-                        if validate_set is not None:
-                            validate_data, validate_labels = validate_set
+                    # Compute validate loss and performance (validate_fn).
+                    if validate_set is not None:
+                        validate_data, validate_labels = validate_set
+                        # Feed validate set. Normalization is not recommended.
+                        validate_loss_val, validate_pred_prob_val = sess.run(
+                            [self.loss, self.pred_prob], feed_dict={self.raw_features_batch: validate_data,
+                                                                    self.labels_batch: validate_labels})
+                        # Add validate summary.
+                        sv.summary_writer.add_summary(
+                            MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
 
-                            # Feed validate set. Normalization is not recommended.
-                            validate_loss_val, validate_pred_prob_val = sess.run(
-                                [self.loss, self.pred_prob], feed_dict={self.raw_features_batch: validate_data,
-                                                                        self.labels_batch: validate_labels})
-                            # Add validate summary.
+                        if validate_fn is not None:
+                            validate_per = validate_fn(predictions=validate_pred_prob_val, labels=validate_labels)
                             sv.summary_writer.add_summary(
-                                MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
+                                MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
+                                global_step_val)
+                            logging.info(
+                                'Step {}, {}: {}.'.format(global_step_val, validate_fn.func_name, validate_per))
 
-                            if validate_fn is not None:
-                                validate_per = validate_fn(predictions=validate_pred_prob_val, labels=validate_labels)
-                                sv.summary_writer.add_summary(
-                                    MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
-                                    global_step_val)
-                                logging.info(
-                                    'Step {}, {}: {}.'.format(global_step_val, validate_fn.func_name, validate_per))
                 else:
                     sess.run(self.train_op)
 
