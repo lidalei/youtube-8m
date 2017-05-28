@@ -24,7 +24,7 @@ from tensorflow import flags, logging, app
 from kmeans import KMeans
 from linear_model import LinearClassifier, LogisticRegression
 from readers import get_reader
-from utils import DataPipeline, random_sample, gap_fn
+from utils import DataPipeline, random_sample, gap_fn, load_sum_labels
 
 from os.path import join as path_join
 import numpy as np
@@ -41,7 +41,7 @@ MAX_TRAIN_STEPS = 1000000
 
 
 def initialize(num_centers_ratio, data_pipeline, method=None, metric='cosine',
-               max_iter=100, tol=0.01, scaling_method=1, alpha=1.0, p=3):
+               max_iter=100, tol=0.005, scaling_method=1, alpha=1.0, p=3):
     """
     This functions initializes representative prototypes (RBF centers) c and scaling factors sigma.
 
@@ -311,7 +311,7 @@ def main(unused_argv):
         # metric is euclidean or cosine. If cosine, alpha=1.0, otherwise can be less than 1.0.
         if 'cosine' == dist_metric:
             # 200 will lead to decreasing drastically and increasing slowly.
-            alpha = 10.0
+            alpha = 1.0
         else:
             alpha = 1.0
         centers, sigmas = initialize(num_centers_ratio, data_pipeline=_train_data_pipeline,
@@ -333,9 +333,21 @@ def main(unused_argv):
         else:
             linear_clf_weights, linear_clf_biases = None, None
 
+        # Set pos_weights for extremely imbalanced situation in one-vs-all classifiers.
+        try:
+            # Load sum_labels in training set, numpy float format to compute pos_weights.
+            train_sum_labels = load_sum_labels()
+            # num_neg / num_pos, assuming neg_weights === 1.0.
+            pos_weights = np.sqrt(float(NUM_TRAIN_EXAMPLES) / train_sum_labels - 1.0)
+            logging.info('Computing pos_weights based on sum_labels in train set successfully.')
+        except:
+            logging.error('Cannot load train sum_labels. Use default value.')
+            pos_weights = None
+
     else:
         linear_clf_weights, linear_clf_biases = None, None
         tr_data_fn, tr_data_paras = None, None
+        pos_weights = None
 
     # PHASE THREE - fine tuning prototypes c, scaling factors sigma and weights and biases.
     # DataPipeline consists of reader, batch size, no. of readers and data pattern.
@@ -348,6 +360,7 @@ def main(unused_argv):
                     validate_set=(validate_data, validate_labels), validate_fn=gap_fn,
                     init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
                     epochs=train_epochs, l1_reg_rate=l1_reg_rate, l2_reg_rate=l2_reg_rate,
+                    pos_weights=pos_weights,
                     initial_weights=linear_clf_weights, initial_biases=linear_clf_biases)
 
     # ....Exit rbf network...
@@ -357,20 +370,22 @@ def main(unused_argv):
 if __name__ == '__main__':
     flags.DEFINE_string('model_type', 'video', 'video or frame level model')
 
+    flags.DEFINE_string('yt8m_home', '/Users/Sophie/Documents/youtube-8m-data',
+                        'YT8M dataset home.')
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord',
-                        'File glob for the training dataset.')
+                        path_join(FLAGS.yt8m_home, 'train_validate/traina*.tfrecord'),
+                        'File glob for the training data set.')
 
     flags.DEFINE_string('validate_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/validate/validateq*.tfrecord',
+                        path_join(FLAGS.yt8m_home, 'train_validate/validateq*.tfrecord'),
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     # mean_rgb,mean_audio
-    flags.DEFINE_string('feature_names', 'mean_audio', 'Features to be used, separated by ,.')
+    flags.DEFINE_string('feature_names', 'mean_rgb,mean_audio', 'Features to be used, separated by ,.')
 
     # 1024,128
-    flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
+    flags.DEFINE_string('feature_sizes', '1024,128', 'Dimensions of features to be used, separated by ,.')
 
     # Set by the memory limit.
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
@@ -382,7 +397,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_string('dist_metric', 'cosine', 'Distance metric, cosine or euclidean.')
 
-    flags.DEFINE_boolean('init_with_linear_clf', False,
+    flags.DEFINE_boolean('init_with_linear_clf', True,
                          'Boolean variable indicating whether to init logistic regression with linear classifier.')
 
     flags.DEFINE_float('init_learning_rate', 0.001, 'Float variable to indicate initial learning rate.')
@@ -395,7 +410,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('l1_reg_rate', 0.01, 'l1 regularization rate.')
     flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
 
-    flags.DEFINE_integer('train_epochs', 200, 'Training epochs, one epoch means passing all training data once.')
+    flags.DEFINE_integer('train_epochs', 5, 'Training epochs, one epoch means passing all training data once.')
 
     # Added current timestamp.
     flags.DEFINE_string('output_dir', '/tmp/video_level/rbf_network',

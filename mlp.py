@@ -9,7 +9,7 @@ import tensorflow as tf
 import numpy as np
 
 from readers import get_reader
-from utils import DataPipeline, random_sample, load_features_mean_var
+from utils import DataPipeline, random_sample, load_features_mean_var, load_sum_labels
 from tensorflow import flags, logging, app
 from utils import gap_fn
 from linear_model import LogisticRegression
@@ -38,7 +38,7 @@ def create_hidden_layer(data, name, pre_size, size, pos_activation, pos_transfor
         Transformed data, i.e., data after passing this layer. A tensorflow tensor.
     """
     with tf.name_scope(name):
-        weights = tf.Variable(initial_value=tf.truncated_normal([pre_size, size], name='weights'))
+        weights = tf.Variable(initial_value=tf.truncated_normal([pre_size, size]), name='weights')
         biases = tf.Variable(initial_value=tf.zeros([size]), name='biases')
 
         inner_product = tf.matmul(data, weights) + biases
@@ -48,9 +48,9 @@ def create_hidden_layer(data, name, pre_size, size, pos_activation, pos_transfor
         tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
 
         # Add to summary.
-        tf.summary.histogram('weights', weights)
-        tf.summary.histogram('biases', biases)
-        tf.summary.histogram('activation', activation)
+        tf.summary.histogram('model/weights', weights)
+        tf.summary.histogram('model/biases', biases)
+        tf.summary.histogram('model/activation', activation)
 
         if pos_transform is not None:
             transformed_data = pos_transform(activation)
@@ -85,8 +85,8 @@ def multi_layer_transform(data, mean=None, variance=None, **kwargs):
         # First Hidden layers---#
         layer_idx = 1
         layer_name = 'hidden_{}'.format(layer_idx)
-        layer_size = 64
-        hidden_activation = create_hidden_layer(current_data, layer_name, current_size, layer_size, tf.nn.tanh)
+        layer_size = 600
+        hidden_activation = create_hidden_layer(current_data, layer_name, current_size, layer_size, tf.nn.relu)
         # ---First Hidden layers#
         current_size = layer_size
         current_data = hidden_activation
@@ -150,10 +150,22 @@ def main(unused_argv):
 
         tr_data_fn = multi_layer_transform
         tr_data_paras = {'mean': train_features_mean, 'variance': train_features_var,
-                         'reshape': True, 'size': 64}
+                         'reshape': True, 'size': 600}
+
+        # Set pos_weights for extremely imbalanced situation in one-vs-all classifiers.
+        try:
+            # Load sum_labels in training set, numpy float format to compute pos_weights.
+            train_sum_labels = load_sum_labels()
+            # num_neg / num_pos, assuming neg_weights === 1.0.
+            pos_weights = np.sqrt(float(NUM_TRAIN_EXAMPLES) / train_sum_labels - 1.0)
+            logging.info('Computing pos_weights based on sum_labels in train set successfully.')
+        except:
+            logging.error('Cannot load train sum_labels. Use default value.')
+            pos_weights = None
     else:
         tr_data_fn = None
         tr_data_paras = dict()
+        pos_weights = None
 
     # Run logistic regression.
     log_reg = LogisticRegression(logdir=output_dir)
@@ -161,30 +173,32 @@ def main(unused_argv):
                 tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
                 validate_set=(validate_data, validate_labels), validate_fn=gap_fn, bootstrap=False,
                 init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
-                epochs=train_epochs, l1_reg_rate=None, l2_reg_rate=l2_reg_rate, pos_weights=None,
+                epochs=train_epochs, l1_reg_rate=None, l2_reg_rate=l2_reg_rate, pos_weights=pos_weights,
                 initial_weights=None, initial_biases=None)
 
 
 if __name__ == '__main__':
     flags.DEFINE_string('model_type', 'video', 'video or frame level model')
 
+    flags.DEFINE_string('yt8m_home', '/Users/Sophie/Documents/youtube-8m-data',
+                        'YT8M dataset home.')
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord',
+                        path_join(FLAGS.yt8m_home, 'train_validate/traina*.tfrecord'),
                         'File glob for the training data set.')
 
     flags.DEFINE_string('validate_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/validate/validateq*.tfrecord',
+                        path_join(FLAGS.yt8m_home, 'train_validate/validateq*.tfrecord'),
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     # mean_rgb,mean_audio
-    flags.DEFINE_string('feature_names', 'mean_audio', 'Features to be used, separated by ,.')
+    flags.DEFINE_string('feature_names', 'mean_rgb', 'Features to be used, separated by ,.')
 
     # 1024,128
-    flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
+    flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
 
-    flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
-    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
+    flags.DEFINE_integer('batch_size', 512, 'Size of batch processing.')
+    flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
 
     flags.DEFINE_bool('start_new_model', True, 'To start a new model or restore from output dir.')
 
