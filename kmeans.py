@@ -217,8 +217,8 @@ class KMeans(object):
         logging.info('Exiting k-means iter ...')
         sess.close()
 
-        # threshold = np.percentile(final_per_clu_count, 10)
-        threshold = 1
+        # Remove smaller clusters.
+        threshold = np.percentile(final_per_clu_count, 5)
         # Deal with empty cluster situation.
         nonzero_indices = np.greater_equal(final_per_clu_count, threshold)
         per_nonempty_clu_count = final_per_clu_count[nonzero_indices]
@@ -264,7 +264,7 @@ class KMeans(object):
             self.per_clu_mean_dist = new_per_clu_mean_dist
 
             # Converged, break!
-            if not np.isinf(self.mean_dist) and (self.mean_dist - new_mean_dist) / self.mean_dist < tol:
+            if not np.isinf(self.mean_dist) and np.abs(self.mean_dist - new_mean_dist) / self.mean_dist < tol:
                 # Update current objective function value.
                 self.mean_dist = new_mean_dist
                 logging.info('Done k-means clustering. Final centers have shape {}. Final mean dist is {}.'.format(
