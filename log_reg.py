@@ -86,6 +86,7 @@ def main(unused_argv):
     # Sample validate set for line search in linear classifier or logistic regression early stopping.
     _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
                                                          data_pipeline=validate_data_pipeline)
+    start_new_model = start_new_model or (not tf.gfile.Exists(output_dir))
 
     # Set pos_weights for extremely imbalanced situation in one-vs-all classifiers.
     try:
@@ -94,7 +95,7 @@ def main(unused_argv):
         # num_neg / num_pos, assuming neg_weights === 1.0.
         pos_weights = np.sqrt((float(NUM_TRAIN_EXAMPLES) - train_sum_labels) / train_sum_labels)
         logging.info('Computing pos_weights based on sum_labels in train set successfully.')
-    except:
+    except IOError:
         logging.error('Cannot load train sum_labels. Use default value.')
         pos_weights = None
     finally:
@@ -103,7 +104,7 @@ def main(unused_argv):
 
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
                                        batch_size=batch_size, num_readers=num_readers)
-    if start_new_model or (not tf.gfile.Exists(output_dir)):
+    if start_new_model:
         if init_with_linear_clf:
             # ...Start linear classifier...
             # Compute weights and biases of linear classifier using normal equation.
@@ -134,7 +135,7 @@ def main(unused_argv):
 
     # Run logistic regression.
     log_reg = LogisticRegression(logdir=path_join(output_dir, 'log_reg'))
-    log_reg.fit(train_data_pipeline,
+    log_reg.fit(train_data_pipeline, start_new_model=start_new_model,
                 tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
                 validate_set=(validate_data, validate_labels), validate_fn=gap_fn, bootstrap=is_bootstrap,
                 init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
