@@ -76,7 +76,7 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
 
     # Increase num_readers.
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
-                                          batch_size=batch_size, num_readers=2 * num_readers)
+                                          batch_size=batch_size, num_readers=num_readers)
 
     # Sample validate set for line search in linear classifier or logistic regression early stopping.
     _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
@@ -148,13 +148,15 @@ def main(unused_argv):
 if __name__ == '__main__':
     flags.DEFINE_string('model_type', 'video', 'video or frame level model')
 
+    flags.DEFINE_string('yt8m_home', '/Users/Sophie/Documents/youtube-8m-data',
+                        'YT8M dataset home.')
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/train/traina*.tfrecord',
+                        path_join(FLAGS.yt8m_home, 'train_validate/traina*.tfrecord'),
                         'File glob for the training data set.')
 
     flags.DEFINE_string('validate_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/validate/validateq*.tfrecord',
+                        path_join(FLAGS.yt8m_home, 'train_validate/validateq*.tfrecord'),
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     # mean_rgb,mean_audio
@@ -164,7 +166,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
 
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
-    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
+    flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
 
     flags.DEFINE_bool('is_bootstrap', False, 'Boolean variable indicating using bootstrap or not.')
 

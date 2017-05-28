@@ -84,8 +84,7 @@ class LinearClassifier(object):
             if tr_data_paras is None:
                 tr_data_paras = {}
             else:
-                reshape = tr_data_paras['reshape']
-                if reshape:
+                if ('reshape' in tr_data_paras) and (tr_data_paras['reshape'] is True):
                     feature_size = tr_data_paras['size']
                     logging.warn('Data transform changes the features size to {}.'.format(feature_size))
 
@@ -586,6 +585,7 @@ class LogisticRegression(object):
                         [self.train_op, self.summary_op, self.global_step],
                         options=run_options, run_metadata=run_metadata)
                     sv.summary_computed(sess, summary, global_step=global_step_val)
+                    sv.summary_writer.add_run_metadata(run_metadata, 'step{}'.format(global_step_val))
 
                     # Compute validate loss and performance (validate_fn).
                     if validate_set is not None:
