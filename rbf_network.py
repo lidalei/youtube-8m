@@ -24,7 +24,7 @@ from tensorflow import flags, logging, app
 from kmeans import KMeans
 from linear_model import LinearClassifier, LogisticRegression
 from readers import get_reader
-from utils import DataPipeline, random_sample, gap_fn, load_sum_labels
+from utils import DataPipeline, random_sample, gap_fn, load_sum_labels, compute_data_mean_var
 
 from os.path import join as path_join
 import numpy as np
@@ -184,7 +184,7 @@ def initialize_per_label():
     raise NotImplementedError('It is a little troubling, will be implemented later! Be patient.')
 
 
-def rbf_transform(data, centers, sigmas, metric='cosine', **kwargs):
+def rbf_transform(data, centers=None, sigmas=None, metric='cosine', **kwargs):
     """
     Transform data using given rbf centers and sigmas.
     
@@ -254,7 +254,20 @@ def rbf_transform(data, centers, sigmas, metric='cosine', **kwargs):
 
         rbf_fs = tf.exp(tf.multiply(squared_dist, basis_f_mul), name='basis_function')
 
-        return rbf_fs
+        if 'mean' in kwargs and 'variance' in kwargs:
+            logging.info('Standard scale is performed after rbf transform.')
+            mean = kwargs['mean']
+            variance = kwargs['variance']
+            with tf.name_scope('standard_scale'):
+                features_mean = tf.Variable(initial_value=mean, trainable=False, name='features_mean')
+                features_var = tf.Variable(initial_value=variance, trainable=False, name='features_var')
+                standardized_data = tf.nn.batch_normalization(rbf_fs,
+                                                              mean=features_mean, variance=features_var,
+                                                              offset=None, scale=None, variance_epsilon=1e-12,
+                                                              name='standardized')
+                return standardized_data
+        else:
+            return rbf_fs
 
 
 def main(unused_argv):
@@ -297,6 +310,10 @@ def main(unused_argv):
                                                          data_pipeline=validate_data_pipeline,
                                                          name_scope='sample_validate')
 
+    # DataPipeline consists of reader, batch size, no. of readers and data pattern.
+    train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
+                                       batch_size=batch_size, num_readers=num_readers)
+
     # If start a new model or output dir does not exist, truly start a new model.
     start_new_model = start_new_model or (not tf.gfile.Exists(output_dir))
 
@@ -304,9 +321,6 @@ def main(unused_argv):
         # PHASE ONE - selecting prototypes c, computing scaling factors sigma.
         # num_centers = FLAGS.num_centers
         # num_centers_ratio = float(num_centers) / NUM_TRAIN_EXAMPLES
-        # DataPipeline consists of reader, batch size, no. of readers and data pattern.
-        _train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
-                                            batch_size=batch_size, num_readers=num_readers)
 
         # metric is euclidean or cosine. If cosine, alpha=1.0, otherwise can be less than 1.0.
         if 'cosine' == dist_metric:
@@ -314,19 +328,21 @@ def main(unused_argv):
             alpha = 1.0
         else:
             alpha = 1.0
-        centers, sigmas = initialize(num_centers_ratio, data_pipeline=_train_data_pipeline,
+        centers, sigmas = initialize(num_centers_ratio, data_pipeline=train_data_pipeline,
                                      method='kmeans', metric=dist_metric,
                                      scaling_method=4, alpha=alpha)
 
         # PHASE TWO - computing linear regression weights and biases.
         num_centers = centers.shape[0]
+        # Compute mean and variance after data transform.
         tr_data_fn = rbf_transform
         tr_data_paras = {'centers': centers, 'sigmas': sigmas, 'metric': dist_metric,
                          'reshape': True, 'size': num_centers}
+        # Not necessary to perform standard scale.
         if init_with_linear_clf:
             # Call linear classification to get a good initial values of weights and biases.
             linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
-            linear_clf.fit(data_pipeline=_train_data_pipeline,
+            linear_clf.fit(data_pipeline=train_data_pipeline,
                            tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
                            l2_regs=0.01, validate_set=(validate_data, validate_labels), line_search=False)
             linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
@@ -340,9 +356,18 @@ def main(unused_argv):
             # num_neg / num_pos, assuming neg_weights === 1.0.
             pos_weights = np.sqrt(float(NUM_TRAIN_EXAMPLES) / train_sum_labels - 1.0)
             logging.info('Computing pos_weights based on sum_labels in train set successfully.')
-        except:
+        except IOError:
             logging.error('Cannot load train sum_labels. Use default value.')
             pos_weights = None
+        finally:
+            pos_weights = None
+
+        # Include standard scale to rbf transform.
+        tr_data_mean, tr_data_var = compute_data_mean_var(train_data_pipeline,
+                                                          tr_data_fn=tr_data_fn,
+                                                          tr_data_paras=tr_data_paras)
+        logging.debug('tr_data_mean: {}\ntr_data_var: {}'.format(tr_data_mean, tr_data_var))
+        tr_data_paras.update({'mean': tr_data_mean, 'variance': tr_data_var})
 
     else:
         linear_clf_weights, linear_clf_biases = None, None
@@ -350,10 +375,6 @@ def main(unused_argv):
         pos_weights = None
 
     # PHASE THREE - fine tuning prototypes c, scaling factors sigma and weights and biases.
-    # DataPipeline consists of reader, batch size, no. of readers and data pattern.
-    train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
-                                       batch_size=batch_size, num_readers=num_readers)
-
     log_reg_clf = LogisticRegression(logdir=path_join(output_dir, 'log_reg'))
     log_reg_clf.fit(train_data_pipeline=train_data_pipeline, start_new_model=start_new_model,
                     tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
@@ -389,7 +410,7 @@ if __name__ == '__main__':
 
     # Set by the memory limit.
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
-    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
+    flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
 
     flags.DEFINE_bool('start_new_model', True, 'To start a new model or restore from output dir.')
 
@@ -400,7 +421,7 @@ if __name__ == '__main__':
     flags.DEFINE_boolean('init_with_linear_clf', True,
                          'Boolean variable indicating whether to init logistic regression with linear classifier.')
 
-    flags.DEFINE_float('init_learning_rate', 0.001, 'Float variable to indicate initial learning rate.')
+    flags.DEFINE_float('init_learning_rate', 0.01, 'Float variable to indicate initial learning rate.')
 
     flags.DEFINE_integer('decay_steps', NUM_TRAIN_EXAMPLES,
                          'Float variable indicating no. of examples to decay learning rate once.')
@@ -410,7 +431,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('l1_reg_rate', 0.01, 'l1 regularization rate.')
     flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
 
-    flags.DEFINE_integer('train_epochs', 5, 'Training epochs, one epoch means passing all training data once.')
+    flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
     # Added current timestamp.
     flags.DEFINE_string('output_dir', '/tmp/video_level/rbf_network',
