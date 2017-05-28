@@ -438,7 +438,7 @@ def compute_data_mean_var(data_pipeline=None, tr_data_fn=None, tr_data_paras=Non
             data_pattern, File Glob of data set.
             batch_size, How many examples to handle per time.
             num_readers, How many IO threads to prefetch examples.
-        tr_data_fn: a function that transforms input data.
+        tr_data_fn: a function that transforms input data (batch data, batch size * features size).
         tr_data_paras: Extra parameters needed to call tr_data_fn.
 
     Returns:
@@ -447,42 +447,47 @@ def compute_data_mean_var(data_pipeline=None, tr_data_fn=None, tr_data_paras=Non
     """
     reader = data_pipeline.reader
     feature_names = reader.feature_names
-    feature_sizes = reader.feature_sizes
+    raw_feature_sizes = reader.feature_sizes
 
-    logging.info('Computing mean and std of {} features with sizes {}.'.format(
-        feature_names, feature_sizes))
+    logging.info('Computing mean and std of transformed features of {} with original sizes {}.'.format(
+        feature_names, raw_feature_sizes))
 
     # features_mean on partial data (600 + train files).
     # Note, can only be used locally, not in google cloud.
     try:
-        par_features_mean = partial_data_features_mean()
+        par_raw_features_mean = partial_data_features_mean()
     except IOError:
         logging.error('Cannot locate partial_data_features_mean data file.')
-        par_features_mean = None
+        par_raw_features_mean = None
 
     # Total number of features.
-    features_size = sum(feature_sizes)
-    if par_features_mean is None:
+    features_size = sum(raw_feature_sizes)
+    if par_raw_features_mean is None:
         approx_raw_features_mean = np.zeros([features_size], dtype=np.float32)
     else:
-        approx_raw_features_mean = np.concatenate([par_features_mean[e] for e in feature_names])
+        approx_raw_features_mean = np.concatenate([par_raw_features_mean[e] for e in feature_names])
 
-    # Transform may change features size.
     if tr_data_fn is not None:
         if tr_data_paras is None:
             tr_data_paras = {}
         else:
+            # Transform may change features size.
             if ('reshape' in tr_data_paras) and (tr_data_paras['reshape'] is True):
-                feature_size = tr_data_paras['size']
-                logging.warn('Data transform changes the features size to {}.'.format(feature_size))
+                features_size = tr_data_paras['size']
+                logging.warn('Data transform changes the features size to {}.'.format(features_size))
 
         with tf.Graph().as_default() as g:
-            approx_features_mean_op = tr_data_fn(approx_raw_features_mean, **tr_data_paras)
+            # tr_data_fn deals with batch data (2D).
+            approx_features_mean_op = tr_data_fn(np.expand_dims(approx_raw_features_mean, 0), **tr_data_paras)
+            init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
         g.finalize()
         sess = tf.Session(graph=g)
-        approx_features_mean = sess.run(approx_features_mean_op)
+        sess.run(init_op)
+        # Convert batched value (2D) to 1D.
+        approx_features_mean = np.squeeze(sess.run(approx_features_mean_op), 0)
         sess.close()
     else:
+        # No transform.
         approx_features_mean = approx_raw_features_mean
 
     # numerical stability with
@@ -493,8 +498,10 @@ def compute_data_mean_var(data_pipeline=None, tr_data_fn=None, tr_data_paras=Non
             get_input_data_tensors(data_pipeline, num_epochs=1, name_scope='features_mean_std'))
 
         example_count = tf.Variable(initial_value=0.0, name='example_count')
-        features_sum = tf.Variable(initial_value=tf.zeros([features_size]), name='features_sum')
-        features_squared_sum = tf.Variable(initial_value=tf.zeros([features_size]), name='features_squared_sum')
+        shifted_features_sum = tf.Variable(initial_value=tf.zeros([features_size]),
+                                           name='shifted_features_sum')
+        shifted_features_sq_sum = tf.Variable(initial_value=tf.zeros([features_size]),
+                                              name='shifted_features_squared_sum')
 
         if tr_data_fn:
             features_batch = tr_data_fn(raw_features_batch, **tr_data_paras)
@@ -503,26 +510,28 @@ def compute_data_mean_var(data_pipeline=None, tr_data_fn=None, tr_data_paras=Non
 
         # Compute shift features sum and squared sum.
         shift = tf.constant(approx_features_mean, dtype=tf.float32, name='shift')
-        shifted_features_batch = tf.subtract(features_batch, shift)
+        shifted_features_batch = tf.subtract(features_batch, shift, name='shifted_features_batch')
 
-        batch_example_count = tf.cast(tf.shape(shifted_features_batch)[0], tf.float32)
-        batch_features_sum = tf.reduce_sum(shifted_features_batch, axis=0, name='batch_features_sum')
-        batch_features_squared_sum = tf.reduce_sum(tf.square(shifted_features_batch), axis=0,
-                                                   name='batch_features_squared_sum')
+        batch_example_count = tf.cast(tf.shape(shifted_features_batch)[0], tf.float32, name='batch_example_count')
+        batch_shifted_features_sum = tf.reduce_sum(shifted_features_batch, axis=0,
+                                                   name='batch_shifted_features_sum')
+        batch_shifted_features_sq_sum = tf.reduce_sum(tf.square(shifted_features_batch), axis=0,
+                                                      name='batch_shifted_features_squared_sum')
 
         update_example_count = tf.assign_add(example_count, batch_example_count)
-        update_features_sum = tf.assign_add(features_sum, batch_features_sum)
-        update_features_squared_sum = tf.assign_add(features_squared_sum, batch_features_squared_sum)
+        update_shifted_features_sum = tf.assign_add(shifted_features_sum, batch_shifted_features_sum)
+        update_shifted_features_sq_sum = tf.assign_add(shifted_features_sq_sum, batch_shifted_features_sq_sum)
 
         with tf.control_dependencies(
-                [update_example_count, update_features_sum, update_features_squared_sum]):
+                [update_example_count, update_shifted_features_sum, update_shifted_features_sq_sum]):
             update_accum_non_op = tf.no_op()
 
         # Define final results. To be run after all data have been handled.
-        features_mean = tf.add(tf.divide(features_sum, example_count), shift, name='features_mean')
-        # Corrected sample standard deviation.
+        shifted_features_mean = tf.divide(shifted_features_sum, example_count, name='shifted_features_mean')
+        features_mean = tf.add(shifted_features_mean, shift, name='features_mean')
+        # Corrected sample standard deviation. Shifted variance equals original variance.
         features_variance = tf.divide(
-            tf.subtract(features_squared_sum, tf.scalar_mul(example_count, tf.square(features_mean))),
+            tf.subtract(shifted_features_sq_sum, tf.scalar_mul(example_count, tf.square(shifted_features_mean))),
             tf.subtract(example_count, 1.0), name='features_var')
         # features_std = tf.sqrt(features_variance, name='features_std')
 
