@@ -630,26 +630,26 @@ def gap_fn(predictions=None, labels=None):
     return calculate_gap(predictions, labels)
 
 
-# if __name__ == '__main__':
+if __name__ == '__main__':
     # features_mean = partial_data_features_mean()
     # print(features_mean)
 
     # sum_labels = load_sum_labels()
     # print(sum_labels)
-    # from readers import get_reader
-    # reader = get_reader('video', 'mean_rgb,mean_audio', '1024,128')
+    from readers import get_reader
+    reader = get_reader('video', 'mean_rgb,mean_audio', '1024,128')
     #
-    # train_data_pipeline = DataPipeline(reader=reader, data_pattern='video_level/train/train*.tfrecord',
-    #                                    batch_size=4096, num_readers=4)
+    train_data_pipeline = DataPipeline(reader=reader, data_pattern='/home/datasets/yt8m/video_level/*/*.tfrecord',
+                                       batch_size=4096, num_readers=2)
     #
-    # features_mean, features_var, labels_mean = compute_data_mean_var(data_pipeline=train_data_pipeline,
-    #                                                                  tr_data_fn=None)
+    features_mean, features_var, labels_mean = compute_data_mean_var(data_pipeline=train_data_pipeline,
+                                                                     tr_data_fn=None)
     #
-    # with open('constants/train_data_features_mean.pickle', 'wb') as f:
-    #     pickle.dump({'mean_rgb': features_mean[:1024], 'mean_audio': features_mean[1024:]}, f)
+    with open('constants/all_data_features_mean.pickle', 'wb') as f:
+        pickle.dump({'mean_rgb': features_mean[:1024], 'mean_audio': features_mean[1024:]}, f)
     #
-    # with open('constants/train_data_features_var.pickle', 'wb') as f:
-    #     pickle.dump({'mean_rgb': features_var[:1024], 'mean_audio': features_var[1024:]}, f)
+    with open('constants/all_data_features_var.pickle', 'wb') as f:
+        pickle.dump({'mean_rgb': features_var[:1024], 'mean_audio': features_var[1024:]}, f)
 
     # maen, var = load_features_mean_var(reader)
     # pass
