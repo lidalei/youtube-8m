@@ -50,7 +50,7 @@ def standard_scale(data, mean=None, variance=None, **kwargs):
         return standardized_data
 
 
-def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, epochs=None):
+def main():
     """
     Training.
 
@@ -64,7 +64,17 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
     Returns:
 
     """
+    logging.set_verbosity(logging.INFO)
+
     output_dir = FLAGS.output_dir
+    start_new_model = FLAGS.start_new_model
+
+    init_learning_rate = FLAGS.init_learning_rate
+    decay_steps = FLAGS.decay_steps
+    decay_rate = FLAGS.decay_rate
+    l2_reg_rate = FLAGS.l2_reg_rate
+    train_epochs = FLAGS.train_epochs
+
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
     reader = get_reader(model_type, feature_names, feature_sizes)
     train_data_pattern = FLAGS.train_data_pattern
@@ -98,30 +108,34 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
 
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
                                        batch_size=batch_size, num_readers=num_readers)
+    if start_new_model or (not tf.gfile.Exists(output_dir)):
+        if init_with_linear_clf:
+            # ...Start linear classifier...
+            # Compute weights and biases of linear classifier using normal equation.
+            # Linear search helps little.
+            linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
+            linear_clf.fit(data_pipeline=train_data_pipeline, l2_regs=[0.01],
+                           validate_set=(validate_data, validate_labels), line_search=False)
+            linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
 
-    if init_with_linear_clf:
-        # ...Start linear classifier...
-        # Compute weights and biases of linear classifier using normal equation.
-        # Linear search helps little.
-        linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
-        linear_clf.fit(data_pipeline=train_data_pipeline, l2_regs=[0.01],
-                       validate_set=(validate_data, validate_labels), line_search=False)
-        linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
+            logging.info('linear classifier weights and biases with shape {}, {}'.format(
+                linear_clf_weights.shape, linear_clf_biases.shape))
+            logging.debug('linear classifier weights and {} biases: {}.'.format(
+                linear_clf_weights, linear_clf_biases))
+            # ...Exit linear classifier...
+        else:
+            linear_clf_weights, linear_clf_biases = None, None
 
-        logging.info('linear classifier weights and biases with shape {}, {}'.format(
-            linear_clf_weights.shape, linear_clf_biases.shape))
-        logging.debug('linear classifier weights and {} biases: {}.'.format(
-            linear_clf_weights, linear_clf_biases))
-        # ...Exit linear classifier...
+        # Load train data mean and std.
+        train_features_mean, train_features_var = load_features_mean_var(reader)
+
+        tr_data_fn = standard_scale
+        tr_data_paras = {'mean': train_features_mean, 'variance': train_features_var,
+                         'reshape': False, 'size': None}
     else:
         linear_clf_weights, linear_clf_biases = None, None
-
-    # Load train data mean and std.
-    train_features_mean, train_features_var = load_features_mean_var(reader)
-
-    tr_data_fn = standard_scale
-    tr_data_paras = {'mean': train_features_mean, 'variance': train_features_var,
-                     'reshape': False, 'size': None}
+        tr_data_fn = None
+        tr_data_paras = None
 
     # Run logistic regression.
     log_reg = LogisticRegression(logdir=path_join(output_dir, 'log_reg'))
@@ -129,20 +143,8 @@ def train(init_learning_rate, decay_steps, decay_rate=0.95, l2_reg_rate=0.01, ep
                 tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
                 validate_set=(validate_data, validate_labels), validate_fn=gap_fn, bootstrap=is_bootstrap,
                 init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
-                epochs=epochs, l2_reg_rate=l2_reg_rate, pos_weights=pos_weights,
+                epochs=train_epochs, l2_reg_rate=l2_reg_rate, pos_weights=pos_weights,
                 initial_weights=linear_clf_weights, initial_biases=linear_clf_biases)
-
-
-def main(unused_argv):
-    logging.set_verbosity(logging.INFO)
-
-    init_learning_rate = FLAGS.init_learning_rate
-    decay_steps = FLAGS.decay_steps
-    decay_rate = FLAGS.decay_rate
-    l2_reg_rate = FLAGS.l2_reg_rate
-    train_epochs = FLAGS.train_epochs
-
-    train(init_learning_rate, decay_steps, decay_rate=decay_rate, l2_reg_rate=l2_reg_rate, epochs=train_epochs)
 
 
 if __name__ == '__main__':
@@ -159,11 +161,9 @@ if __name__ == '__main__':
                         path_join(FLAGS.yt8m_home, 'train_validate/validateq*.tfrecord'),
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
-    # mean_rgb,mean_audio
-    flags.DEFINE_string('feature_names', 'mean_audio', 'Features to be used, separated by ,.')
+    flags.DEFINE_string('feature_names', 'mean_rgb,mean_audio', 'Features to be used, separated by ,.')
 
-    # 1024,128
-    flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
+    flags.DEFINE_string('feature_sizes', '1024,128', 'Dimensions of features to be used, separated by ,.')
 
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
@@ -184,8 +184,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_integer('train_epochs', 200, 'Training epochs, one epoch means passing all training data once.')
 
-    flags.DEFINE_boolean('is_tuning_hyper_para', False,
-                         'Boolean variable indicating whether to perform hyper-parameter tuning.')
+    flags.DEFINE_bool('start_new_model', False, 'To start a new model or restore from output dir.')
 
     # Added current timestamp.
     flags.DEFINE_string('output_dir', '/tmp/video_level',
