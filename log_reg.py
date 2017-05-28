@@ -50,19 +50,14 @@ def standard_scale(data, mean=None, variance=None, **kwargs):
         return standardized_data
 
 
-def main():
+def main(unused_argv):
     """
     Training.
-
-    Args:
-        init_learning_rate: Initial learning rate.
-        decay_steps: How many training steps to decay learning rate once.
-        decay_rate: How much to decay learning rate.
-        l2_reg_rate: l2 regularization rate.
-        epochs: The maximal epochs to pass all training data.
-
-    Returns:
-
+    init_learning_rate: Initial learning rate.
+    decay_steps: How many training steps to decay learning rate once.
+    decay_rate: How much to decay learning rate.
+    l2_reg_rate: l2 regularization rate.
+    epochs: The maximal epochs to pass all training data.
     """
     logging.set_verbosity(logging.INFO)
 
