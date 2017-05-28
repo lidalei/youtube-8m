@@ -174,6 +174,7 @@ def GetListOfFeatureNamesAndSizes(feature_names, feature_sizes):
 def partial_data_features_mean():
     """
     Load approximate features mean for computing variance with numerical stability.
+    762 train files + 585 validate files + 377 test files. 
     """
     folder = dirname(abspath(getsourcefile(lambda: 0)))
     with open(path_join(folder, 'constants/partial_data_features_mean.pickle'), 'rb') as pickle_file:
@@ -202,7 +203,7 @@ def load_sum_labels():
 
 def load_features_mean_var(reader):
     """
-    Load features mean in train data.
+    Load features mean in all (train, validate and test) data.
     """
     feature_names = reader.feature_names
 
@@ -647,28 +648,27 @@ def gap_fn(predictions=None, labels=None):
     :return: GAP - global average precision.
     """
     return calculate_gap(predictions, labels)
-
-
-# if __name__ == '__main__':
+"""
+if __name__ == '__main__':
     # features_mean = partial_data_features_mean()
     # print(features_mean)
 
     # sum_labels = load_sum_labels()
     # print(sum_labels)
-    # from readers import get_reader
-    # reader = get_reader('video', 'mean_rgb,mean_audio', '1024,128')
-    # #
-    # train_data_pipeline = DataPipeline(reader=reader, data_pattern='yt8m/video_level/*/*.tfrecord',
-    #                                    batch_size=4096, num_readers=1)
+    from readers import get_reader
+    reader = get_reader('video', 'mean_rgb,mean_audio', '1024,128')
+    data_pipeline = DataPipeline(reader=reader, data_pattern='/Users/Sophie/Documents/youtube-8m-data/*/*.tfrecord',
+                                 batch_size=4096, num_readers=1)
     #
-    # features_mean, features_var = compute_data_mean_var(data_pipeline=train_data_pipeline,
-    #                                                     tr_data_fn=None, tr_data_paras=None)
+    features_mean, features_var = compute_data_mean_var(data_pipeline=data_pipeline,
+                                                        tr_data_fn=None, tr_data_paras=None)
     #
-    # with open('constants/all_data_features_mean.pickle', 'wb') as f:
-    #     pickle.dump({'mean_rgb': features_mean[:1024], 'mean_audio': features_mean[1024:]}, f)
+    with open('constants/partial_data_features_mean.pickle', 'wb') as f:
+        pickle.dump({'mean_rgb': features_mean[:1024], 'mean_audio': features_mean[1024:]}, f)
     #
-    # with open('constants/all_data_features_var.pickle', 'wb') as f:
-    #     pickle.dump({'mean_rgb': features_var[:1024], 'mean_audio': features_var[1024:]}, f)
+    with open('constants/partial_data_features_var.pickle', 'wb') as f:
+        pickle.dump({'mean_rgb': features_var[:1024], 'mean_audio': features_var[1024:]}, f)
 
     # mean, var = load_features_mean_var(reader)
     # pass
+"""
