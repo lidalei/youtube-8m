@@ -577,7 +577,7 @@ class LogisticRegression(object):
                     self.saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
                     break
 
-                if step % 200 == 0:
+                if step % 300 == 0:
                     run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
                     run_metadata = tf.RunMetadata()
 
