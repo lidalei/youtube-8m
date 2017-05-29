@@ -311,8 +311,9 @@ class LogisticRegression(object):
 
         # Define num_classes logistic regression models parameters.
         if self.initial_weights is None:
-            weights = tf.Variable(initial_value=tf.truncated_normal([self.feature_size, self.num_classes]),
-                                  dtype=tf.float32, name='weights')
+            weights = tf.Variable(initial_value=tf.truncated_normal(
+                [self.feature_size, self.num_classes], stddev=1.0 / np.sqrt(self.feature_size)),
+                dtype=tf.float32, name='weights')
         else:
             weights = tf.Variable(initial_value=self.initial_weights, dtype=tf.float32, name='weights')
         # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.

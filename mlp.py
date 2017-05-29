@@ -38,7 +38,9 @@ def create_hidden_layer(data, name, pre_size, size, pos_activation, pos_transfor
         Transformed data, i.e., data after passing this layer. A tensorflow tensor.
     """
     with tf.name_scope(name):
-        weights = tf.Variable(initial_value=tf.truncated_normal([pre_size, size]), name='weights')
+        # Initialize weights based on fan-in.
+        weights = tf.Variable(initial_value=tf.truncated_normal(
+            [pre_size, size], stddev=1.0 / np.sqrt(pre_size)), name='weights')
         biases = tf.Variable(initial_value=tf.zeros([size]), name='biases')
 
         inner_product = tf.matmul(data, weights) + biases
@@ -162,6 +164,8 @@ def main(unused_argv):
         except:
             logging.error('Cannot load train sum_labels. Use default value.')
             pos_weights = None
+        finally:
+            pos_weights = None
     else:
         tr_data_fn = None
         tr_data_paras = dict()
@@ -198,7 +202,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
 
     flags.DEFINE_integer('batch_size', 512, 'Size of batch processing.')
-    flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
+    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_bool('start_new_model', True, 'To start a new model or restore from output dir.')
 
