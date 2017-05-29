@@ -98,15 +98,18 @@ class KMeans(object):
 
             # Assign video batch to current centers (clusters).
             if self.metric == 'euclidean':
-                # Make use of broadcasting feature.
-                expanded_current_centers = tf.expand_dims(current_centers, axis=0)
-                expanded_video_batch = tf.expand_dims(video_batch, axis=1)
+                with tf.device('/cpu:0'):
+                    # sub is very large.
+                    # Make use of broadcasting feature.
+                    expanded_current_centers = tf.expand_dims(current_centers, axis=0)
+                    expanded_video_batch = tf.expand_dims(video_batch, axis=1)
 
-                sub = tf.subtract(expanded_video_batch, expanded_current_centers)
-                # element-wise square.
-                squared_sub = tf.square(sub)
-                # Compute distances with centers video-wisely. Shape [batch_size, num_initial_centers]. negative === -.
-                neg_dist = tf.negative(tf.sqrt(tf.reduce_sum(squared_sub, axis=-1)))
+                    sub = tf.subtract(expanded_video_batch, expanded_current_centers)
+                    # element-wise square.
+                    squared_sub = tf.square(sub)
+                    # Compute distances with centers video-wisely. Shape [batch_size, num_initial_centers].
+                    # negative === -.
+                    neg_dist = tf.negative(tf.sqrt(tf.reduce_sum(squared_sub, axis=-1)))
                 # Compute assignments and the distance with nearest centers video-wisely.
                 neg_topk_nearest_dist, topk_assignments = tf.nn.top_k(neg_dist, k=1)
                 nearest_topk_dist = tf.negative(neg_topk_nearest_dist)
