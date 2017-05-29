@@ -577,35 +577,57 @@ class LogisticRegression(object):
                     self.saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
                     break
 
-                if step % 300 == 0:
+                if step % 500 == 0:
                     run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
                     run_metadata = tf.RunMetadata()
 
-                    _, summary, global_step_val = sess.run(
-                        [self.train_op, self.summary_op, self.global_step],
-                        options=run_options, run_metadata=run_metadata)
+                    if validate_fn is not None:
+                        _, summary, train_pred_prob_batch, train_labels_batch, global_step_val = sess.run(
+                            [self.train_op, self.summary_op, self.pred_prob, self.labels_batch, self.global_step],
+                            options=run_options, run_metadata=run_metadata)
+
+                        # Evaluate on train data.
+                        train_per = validate_fn(predictions=train_pred_prob_batch, labels=train_labels_batch)
+                        sv.summary_writer.add_summary(
+                            MakeSummary('train/{}'.format(validate_fn.func_name), train_per),
+                            global_step_val)
+                        logging.info('Step {}, train {}: {}.'.format(global_step_val,
+                                                                     validate_fn.func_name, train_per))
+                    else:
+                        _, summary, global_step_val = sess.run(
+                            [self.train_op, self.summary_op, self.global_step],
+                            options=run_options, run_metadata=run_metadata)
+
+                    # Add train summary.
                     sv.summary_computed(sess, summary, global_step=global_step_val)
                     sv.summary_writer.add_run_metadata(run_metadata, 'step{}'.format(global_step_val))
 
                     # Compute validate loss and performance (validate_fn).
                     if validate_set is not None:
                         validate_data, validate_labels = validate_set
-                        # Feed validate set. Normalization is not recommended.
-                        validate_loss_val, validate_pred_prob_val = sess.run(
-                            [self.loss, self.pred_prob], feed_dict={self.raw_features_batch: validate_data,
+                        if validate_fn is not None:
+                            # Feed validate set. Normalization is not recommended.
+                            validate_loss_val, validate_pred_prob_val = sess.run(
+                                [self.loss, self.pred_prob], feed_dict={self.raw_features_batch: validate_data,
+                                                                        self.labels_batch: validate_labels})
+                            validate_per = validate_fn(predictions=validate_pred_prob_val, labels=validate_labels)
+                            sv.summary_writer.add_summary(
+                                MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
+                                global_step_val)
+                            logging.info('Step {}, validate {}: {}.'.format(global_step_val,
+                                                                            validate_fn.func_name, validate_per))
+                        else:
+                            validate_loss_val = sess.run(self.loss,
+                                                         feed_dict={self.raw_features_batch: validate_data,
                                                                     self.labels_batch: validate_labels})
                         # Add validate summary.
                         sv.summary_writer.add_summary(
                             MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
 
-                        if validate_fn is not None:
-                            validate_per = validate_fn(predictions=validate_pred_prob_val, labels=validate_labels)
-                            sv.summary_writer.add_summary(
-                                MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
-                                global_step_val)
-                            logging.info(
-                                'Step {}, {}: {}.'.format(global_step_val, validate_fn.func_name, validate_per))
-
+                elif step % 200 == 0:
+                    _, summary, global_step_val = sess.run(
+                        [self.train_op, self.summary_op, self.global_step])
+                    sv.summary_computed(sess, summary, global_step=global_step_val)
                 else:
                     sess.run(self.train_op)
 
