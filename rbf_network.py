@@ -408,9 +408,8 @@ if __name__ == '__main__':
     # 1024,128
     flags.DEFINE_string('feature_sizes', '1024,128', 'Dimensions of features to be used, separated by ,.')
 
-    # Set by the memory limit.
     flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
-    flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
+    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_bool('start_new_model', True, 'To start a new model or restore from output dir.')
 

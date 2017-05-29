@@ -173,7 +173,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_sizes', '1024,128', 'Dimensions of features to be used, separated by ,.')
 
     flags.DEFINE_integer('batch_size', 4096, 'Size of batch processing.')
-    flags.DEFINE_integer('num_readers', 1, 'Number of readers to form a batch.')
+    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     # Separated by , (csv separator), e.g., log_reg_rgb,log_reg_audio. Used in bagging.
     flags.DEFINE_string('train_model_dirs', '/tmp/video_level/mlp',
