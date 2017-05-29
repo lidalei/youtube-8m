@@ -224,19 +224,26 @@ class KMeans(object):
         per_nonempty_clu_count = final_per_clu_count[nonzero_indices]
         # Expand to each feature to make use of broadcasting.
         per_nonempty_clu_feat_count = np.expand_dims(per_nonempty_clu_count, axis=1)
-        total_num_points = np.sum(per_nonempty_clu_count)
         per_nonempty_clu_sum = final_per_clu_sum[nonzero_indices]
+
+        updated_centers = per_nonempty_clu_sum / per_nonempty_clu_feat_count
 
         if self.return_mean_clu_dist:
             per_nonempty_clu_total_dist = final_per_clu_total_dist[nonzero_indices]
+            # Objective function value.
+            total_nonempty_num_points = np.sum(per_nonempty_clu_count)
+            total_nonempty_dist = np.sum(per_nonempty_clu_total_dist)
+            mean_dist = total_nonempty_dist / total_nonempty_num_points
             # Numpy array divide element-wisely.
             per_nonempty_clu_mean_dist = per_nonempty_clu_total_dist / per_nonempty_clu_count
         else:
+            # Objective function value.
+            total_num_points = np.sum(final_per_clu_count)
+            mean_dist = final_total_dist / total_num_points
             per_nonempty_clu_mean_dist = None
 
         # Numpy array divide element-wisely.
-        return ((per_nonempty_clu_sum / per_nonempty_clu_feat_count), final_total_dist / total_num_points,
-                per_nonempty_clu_mean_dist)
+        return updated_centers, mean_dist, per_nonempty_clu_mean_dist
 
     def fit(self, max_iter=100, tol=0.01):
         """
