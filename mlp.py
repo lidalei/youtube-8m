@@ -125,9 +125,8 @@ def main(unused_argv):
 
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
     reader = get_reader(model_type, feature_names, feature_sizes)
-    yt8m_home = FLAGS.yt8m_home
-    train_data_pattern = path_join(yt8m_home, FLAGS.train_data_pattern)
-    validate_data_pattern = path_join(yt8m_home, FLAGS.validate_data_pattern)
+    train_data_pattern = FLAGS.train_data_pattern
+    validate_data_pattern = FLAGS.validate_data_pattern
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
 
@@ -184,10 +183,12 @@ if __name__ == '__main__':
     flags.DEFINE_string('yt8m_home', '/Users/Sophie/Documents/youtube-8m-data',
                         'YT8M dataset home.')
     # Set as '' to be passed in python running command.
-    flags.DEFINE_string('train_data_pattern', 'train_validate/traina*.tfrecord',
+    flags.DEFINE_string('train_data_pattern',
+                        path_join(FLAGS.yt8m_home, 'train_validate/traina*.tfrecord'),
                         'File glob for the training data set.')
 
-    flags.DEFINE_string('validate_data_pattern', 'train_validate/validateq*.tfrecord',
+    flags.DEFINE_string('validate_data_pattern',
+                        path_join(FLAGS.yt8m_home, 'train_validate/validateq*.tfrecord'),
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     # mean_rgb,mean_audio
