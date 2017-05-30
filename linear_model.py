@@ -387,7 +387,7 @@ class LogisticRegression(object):
             final_loss = tf.add(loss, reg_loss, name='final_loss')
 
         with tf.name_scope('optimization'):
-            optimizer = tf.train.AdamOptimizer(learning_rate=self.init_learning_rate)
+            optimizer = tf.train.RMSPropOptimizer(learning_rate=self.init_learning_rate)
             # Decayed learning rate.
             # rough_num_examples_processed = tf.multiply(global_step, self.batch_size)
             # adap_learning_rate = tf.train.exponential_decay(self.init_learning_rate, rough_num_examples_processed,
