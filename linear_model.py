@@ -291,7 +291,7 @@ class LogisticRegression(object):
     def _build_graph(self):
         """
         Build graph.
-        
+
         Returns:
             A saver object. It can be used in constructing a Supervisor object.
         Note:
@@ -387,12 +387,13 @@ class LogisticRegression(object):
             final_loss = tf.add(loss, reg_loss, name='final_loss')
 
         with tf.name_scope('optimization'):
+            optimizer = tf.train.AdamOptimizer(learning_rate=self.init_learning_rate)
             # Decayed learning rate.
-            rough_num_examples_processed = tf.multiply(global_step, self.batch_size)
-            adap_learning_rate = tf.train.exponential_decay(self.init_learning_rate, rough_num_examples_processed,
-                                                            self.decay_steps, self.decay_rate, staircase=True,
-                                                            name='adap_learning_rate')
-            optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
+            # rough_num_examples_processed = tf.multiply(global_step, self.batch_size)
+            # adap_learning_rate = tf.train.exponential_decay(self.init_learning_rate, rough_num_examples_processed,
+            #                                                 self.decay_steps, self.decay_rate, staircase=True,
+            #                                                 name='adap_learning_rate')
+            # optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
             train_op = optimizer.minimize(final_loss, global_step=global_step)
 
             tf.summary.scalar('learning_rate', adap_learning_rate)
@@ -472,7 +473,7 @@ class LogisticRegression(object):
             decay_steps: Decayed gradient descent parameter.
             decay_rate: Decayed gradient descent parameter.
             epochs: Maximal epochs to use.
-            l1_reg_rate: None, not impose l1 regularization. 
+            l1_reg_rate: None, not impose l1 regularization.
             l2_reg_rate: l2 regularization rate.
             pos_weights: For imbalanced binary classes. Here, num_pos << num_neg, the weights should be > 1.0.
                 If None, treated as 1.0 for all binary classifiers.
