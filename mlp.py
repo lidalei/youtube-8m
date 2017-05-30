@@ -3,7 +3,7 @@ Multi-layer Perceptron (MLP).
 
 Note:
     1. Normalizing features will lead to much faster convergence but worse performance.
-    2. Instead, standard scaling features will help achieve better performance. 
+    2. Instead, standard scaling features will help achieve better performance.
 """
 import tensorflow as tf
 import numpy as np
@@ -26,7 +26,7 @@ NUM_TEST_EXAMPLES = 700640
 def create_hidden_layer(data, name, pre_size, size, pos_activation, pos_transform=None):
     """
     Create a hidden fully connected layer.
-    
+
     Args:
         data: Data output from previous layer. A tf tensor.
         name: Layer name.
@@ -88,7 +88,8 @@ def multi_layer_transform(data, mean=None, variance=None, **kwargs):
         layer_idx = 1
         layer_name = 'hidden_{}'.format(layer_idx)
         layer_size = 600
-        hidden_activation = create_hidden_layer(current_data, layer_name, current_size, layer_size, tf.nn.relu)
+        # Try relu and tanh, no sigmoid.
+        hidden_activation = create_hidden_layer(current_data, layer_name, current_size, layer_size, tf.nn.tanh)
         # ---First Hidden layers#
         current_size = layer_size
         current_data = hidden_activation
@@ -112,7 +113,7 @@ def main(unused_argv):
         decay_steps: How many training steps to decay learning rate once.
         decay_rate: How much to decay learning rate.
         l2_reg_rate: l2 regularization rate.
-        epochs: The maximal epochs to pass all training data. 
+        epochs: The maximal epochs to pass all training data.
     """
     logging.set_verbosity(logging.INFO)
 
@@ -164,8 +165,6 @@ def main(unused_argv):
         except:
             logging.error('Cannot load train sum_labels. Use default value.')
             pos_weights = None
-        finally:
-            pos_weights = None
     else:
         tr_data_fn = None
         tr_data_paras = dict()
@@ -188,20 +187,20 @@ if __name__ == '__main__':
                         'YT8M dataset home.')
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        path_join(FLAGS.yt8m_home, 'train_validate/traina*.tfrecord'),
+                        path_join(FLAGS.yt8m_home, 'train_validate/train*.tfrecord'),
                         'File glob for the training data set.')
 
     flags.DEFINE_string('validate_data_pattern',
-                        path_join(FLAGS.yt8m_home, 'train_validate/validateq*.tfrecord'),
+                        path_join(FLAGS.yt8m_home, 'train_validate/validate*.tfrecord'),
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     # mean_rgb,mean_audio
-    flags.DEFINE_string('feature_names', 'mean_rgb', 'Features to be used, separated by ,.')
+    flags.DEFINE_string('feature_names', 'mean_rgb,mean_audio', 'Features to be used, separated by ,.')
 
     # 1024,128
-    flags.DEFINE_string('feature_sizes', '1024', 'Dimensions of features to be used, separated by ,.')
+    flags.DEFINE_string('feature_sizes', '1024,128', 'Dimensions of features to be used, separated by ,.')
 
-    flags.DEFINE_integer('batch_size', 512, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 200, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_bool('start_new_model', True, 'To start a new model or restore from output dir.')
@@ -213,9 +212,9 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
 
-    flags.DEFINE_float('l2_reg_rate', 0.1, 'l2 regularization rate.')
+    flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
 
-    flags.DEFINE_integer('train_epochs', 200, 'Training epochs, one epoch means passing all training data once.')
+    flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
     # Added current timestamp.
     flags.DEFINE_string('output_dir', '/tmp/video_level/mlp',
