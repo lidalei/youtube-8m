@@ -393,10 +393,9 @@ class LogisticRegression(object):
             # adap_learning_rate = tf.train.exponential_decay(self.init_learning_rate, rough_num_examples_processed,
             #                                                 self.decay_steps, self.decay_rate, staircase=True,
             #                                                 name='adap_learning_rate')
+            # tf.summary.scalar('learning_rate', adap_learning_rate)
             # optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
             train_op = optimizer.minimize(final_loss, global_step=global_step)
-
-            tf.summary.scalar('learning_rate', adap_learning_rate)
 
         summary_op = tf.summary.merge_all()
         # summary_op = tf.constant(1.0)
