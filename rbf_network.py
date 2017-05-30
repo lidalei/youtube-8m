@@ -187,7 +187,7 @@ def initialize_per_label():
 def rbf_transform(data, centers=None, sigmas=None, metric='cosine', **kwargs):
     """
     Transform data using given rbf centers and sigmas.
-    
+
     Args:
         data: A 2D tensorflow tensor. The second dimension represents the features.
         centers: rbf centers. A numpy array. The second dimension equals data.
@@ -396,10 +396,10 @@ if __name__ == '__main__':
     flags.DEFINE_string('yt8m_home', '/Users/Sophie/Documents/youtube-8m-data',
                         'YT8M dataset home.')
     # Set as '' to be passed in python running command.
-    flags.DEFINE_string('train_data_pattern', 'train_validate/traina*.tfrecord',
+    flags.DEFINE_string('train_data_pattern', 'train_validate/train*.tfrecord',
                         'File glob for the training data set.')
 
-    flags.DEFINE_string('validate_data_pattern', 'train_validate/validateq*.tfrecord',
+    flags.DEFINE_string('validate_data_pattern', 'train_validate/validate*.tfrecord',
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     # mean_rgb,mean_audio
@@ -427,10 +427,10 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
     # Regularization rates.
-    flags.DEFINE_float('l1_reg_rate', 0.01, 'l1 regularization rate.')
+    flags.DEFINE_float('l1_reg_rate', None, 'l1 regularization rate.')
     flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
 
-    flags.DEFINE_integer('train_epochs', 200, 'Training epochs, one epoch means passing all training data once.')
+    flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
     # Added current timestamp.
     flags.DEFINE_string('output_dir', '/tmp/video_level/rbf_network',

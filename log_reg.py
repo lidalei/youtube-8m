@@ -5,7 +5,7 @@ Note:
     1. Normalizing features will lead to much faster convergence but worse performance.
     2. Instead, standard scaling features will help achieve better performance.
     3. Initializing with linear regression will help get even better result.
-    4. Bagging is implemented as training separately but combining inferences from multiple models. 
+    4. Bagging is implemented as training separately but combining inferences from multiple models.
 TODO:
     Add layers to form a neural network.
 """
@@ -31,7 +31,7 @@ NUM_TEST_EXAMPLES = 700640
 def standard_scale(data, mean=None, variance=None, **kwargs):
     """
     Standard scale data using given mean and var.
-    
+
     Args:
         data: The second dimension represents the features. A 2D tensorflow tensor.
         mean: features mean. A 1D numpy array.
@@ -150,11 +150,11 @@ if __name__ == '__main__':
                         'YT8M dataset home.')
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        path_join(FLAGS.yt8m_home, 'train_validate/traina*.tfrecord'),
+                        path_join(FLAGS.yt8m_home, 'train_validate/train*.tfrecord'),
                         'File glob for the training data set.')
 
     flags.DEFINE_string('validate_data_pattern',
-                        path_join(FLAGS.yt8m_home, 'train_validate/validateq*.tfrecord'),
+                        path_join(FLAGS.yt8m_home, 'train_validate/validate*.tfrecord'),
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     flags.DEFINE_string('feature_names', 'mean_rgb,mean_audio', 'Features to be used, separated by ,.')
@@ -178,7 +178,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
 
-    flags.DEFINE_integer('train_epochs', 200, 'Training epochs, one epoch means passing all training data once.')
+    flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
     flags.DEFINE_bool('start_new_model', False, 'To start a new model or restore from output dir.')
 
