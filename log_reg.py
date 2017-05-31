@@ -110,8 +110,9 @@ def main(unused_argv):
             # Compute weights and biases of linear classifier using normal equation.
             # Linear search helps little.
             linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
-            linear_clf.fit(data_pipeline=train_data_pipeline, l2_regs=[0.01],
-                           validate_set=(validate_data, validate_labels), line_search=False)
+            linear_clf.fit(data_pipeline=train_data_pipeline,
+                           l2_regs=[0.001, 0.01, 0.1, 0.5, 1.0, 10.0, 50.0, 500.0],
+                           validate_set=(validate_data, validate_labels), line_search=True)
             linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
 
             logging.info('linear classifier weights and biases with shape {}, {}'.format(
@@ -176,14 +177,14 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
 
-    flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
+    flags.DEFINE_float('l2_reg_rate', 0.001, 'l2 regularization rate.')
 
     flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
     flags.DEFINE_bool('start_new_model', False, 'To start a new model or restore from output dir.')
 
     # Added current timestamp.
-    flags.DEFINE_string('output_dir', '/tmp/video_level',
+    flags.DEFINE_string('output_dir', '/tmp/video_level/log_reg',
                         'The directory where intermediate and model checkpoints should be written.')
 
     app.run()
