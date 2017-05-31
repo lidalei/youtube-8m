@@ -23,7 +23,7 @@ NUM_VALIDATE_EXAMPLES = None
 NUM_TEST_EXAMPLES = 700640
 
 
-def create_hidden_layer(data, name, pre_size, size, pos_activation, pos_transform=None):
+def create_hidden_layer(data, name, pre_size, size, pos_activation, pos_transform=None, pos_transform_paras=None):
     """
     Create a hidden fully connected layer.
 
@@ -55,7 +55,9 @@ def create_hidden_layer(data, name, pre_size, size, pos_activation, pos_transfor
         tf.summary.histogram('model/activation', activation)
 
         if pos_transform is not None:
-            transformed_data = pos_transform(activation)
+            if pos_transform_paras is None:
+                pos_transform_paras = dict()
+            transformed_data = pos_transform(activation, **pos_transform_paras)
             return transformed_data
         else:
             return activation
@@ -93,11 +95,12 @@ def multi_layer_transform(data, mean=None, variance=None, **kwargs):
         # ---First Hidden layers#
         current_size = layer_size
         current_data = hidden_activation
+
         """
         # Second Hidden layers---#
         layer_idx = 2
         layer_name = 'hidden_{}'.format(layer_idx)
-        layer_size = 32
+        layer_size = 200
         hidden_activation = create_hidden_layer(current_data, layer_name, current_size, layer_size, tf.tanh)
         # ---Second Hidden layers#
         current_size = layer_size
@@ -165,6 +168,8 @@ def main(unused_argv):
         except:
             logging.error('Cannot load train sum_labels. Use default value.')
             pos_weights = None
+        finally:
+            pos_weights = None
     else:
         tr_data_fn = None
         tr_data_paras = dict()
@@ -212,7 +217,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
 
-    flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
+    flags.DEFINE_float('l2_reg_rate', 0.001, 'l2 regularization rate.')
 
     flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
