@@ -164,7 +164,7 @@ def main(unused_argv):
 
         tr_data_fn = multi_layer_transform
         tr_data_paras = {'mean': train_features_mean, 'variance': train_features_var,
-                         'reshape': True, 'size': 600}
+                         'reshape': True, 'size': 664}
 
         # Set pos_weights for extremely imbalanced situation in one-vs-all classifiers.
         try:
@@ -175,6 +175,8 @@ def main(unused_argv):
             logging.info('Computing pos_weights based on sum_labels in train set successfully.')
         except:
             logging.error('Cannot load train sum_labels. Use default value.')
+            pos_weights = None
+        finally:
             pos_weights = None
     else:
         tr_data_fn = None
