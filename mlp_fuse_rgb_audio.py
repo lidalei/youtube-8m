@@ -30,7 +30,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
     Args:
         train_data_pipeline:
         epochs: The maximal epochs to pass all training data.
-        pos_weights: 
+        pos_weights:
         l1_reg_rate:
         l2_reg_rate: l2 regularization rate.
         init_learning_rate: Initial learning rate.
@@ -67,7 +67,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
 
         # mean_rgb
         layer_name_rgb = 'hidden_{}_rgb'.format(layer_idx)
-        layer_size_rgb = 800
+        layer_size_rgb = 2048
 
         with tf.name_scope(layer_name_rgb):
             # Initialize weights based on fan-in.
@@ -88,7 +88,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
 
         # mean_audio
         layer_name_audio = 'hidden_{}_audio'.format(layer_idx)
-        layer_size_audio = 80
+        layer_size_audio = 256
 
         with tf.name_scope(layer_name_audio):
             # Initialize weights based on fan-in.
@@ -115,7 +115,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
         # Second Hidden layers---#
         layer_idx = 2
         layer_name = 'hidden_{}'.format(layer_idx)
-        layer_size = 600
+        layer_size = 1200
 
         with tf.name_scope(layer_name):
             # Initialize weights based on fan-in.
@@ -134,32 +134,6 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
             tf.summary.histogram('model/biases', biases)
             tf.summary.histogram('model/activation', hidden_activation)
         # ----End Second layer.
-        prev_layer_size = layer_size
-        prev_layer_activation = hidden_activation
-
-        # Third Hidden layers---#
-        layer_idx = 3
-        layer_name = 'hidden_{}'.format(layer_idx)
-        layer_size = 300
-
-        with tf.name_scope(layer_name):
-            # Initialize weights based on fan-in.
-            weights = tf.Variable(initial_value=tf.truncated_normal(
-                [prev_layer_size, layer_size], stddev=1.0 / np.sqrt(prev_layer_size)), name='weights')
-            biases = tf.Variable(initial_value=tf.zeros([layer_size]), name='biases')
-
-            inner_product = tf.matmul(prev_layer_activation, weights) + biases
-            hidden_activation = tf.tanh(inner_product)
-
-            # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
-            tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
-
-            # Add to summary.
-            tf.summary.histogram('model/weights', weights)
-            tf.summary.histogram('model/biases', biases)
-            tf.summary.histogram('model/activation', hidden_activation)
-        # ----End Third layer.
-
         prev_layer_size = layer_size
         prev_layer_activation = hidden_activation
 
@@ -301,11 +275,6 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                     # Add validate summary.
                     sv.summary_writer.add_summary(
                         MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
-
-            elif step % 200 == 0:
-                _, summary, global_step_val = sess.run(
-                    [train_op, summary_op, global_step])
-                sv.summary_computed(sess, summary, global_step=global_step_val)
             else:
                 sess.run(train_op)
 
@@ -408,7 +377,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
 
     flags.DEFINE_float('l1_reg_rate', None, 'l1 regularization rate.')
-    
+
     flags.DEFINE_float('l2_reg_rate', None, 'l2 regularization rate.')
 
     flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
