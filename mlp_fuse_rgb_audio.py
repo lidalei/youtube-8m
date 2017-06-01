@@ -112,7 +112,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
         prev_layer_activation = tf.concat([hidden_activation_rgb, hidden_activation_audio], 1,
                                           name='hidden_{}_activation'.format(layer_idx))
 
-        # First Hidden layers---#
+        # Second Hidden layers---#
         layer_idx = 2
         layer_name = 'hidden_{}'.format(layer_idx)
         layer_size = 600
@@ -133,8 +133,33 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
             tf.summary.histogram('model/weights', weights)
             tf.summary.histogram('model/biases', biases)
             tf.summary.histogram('model/activation', hidden_activation)
+        # ----End Second layer.
+        prev_layer_size = layer_size
+        prev_layer_activation = hidden_activation
 
-        # ----End first layer.
+        # Third Hidden layers---#
+        layer_idx = 3
+        layer_name = 'hidden_{}'.format(layer_idx)
+        layer_size = 300
+
+        with tf.name_scope(layer_name):
+            # Initialize weights based on fan-in.
+            weights = tf.Variable(initial_value=tf.truncated_normal(
+                [prev_layer_size, layer_size], stddev=1.0 / np.sqrt(prev_layer_size)), name='weights')
+            biases = tf.Variable(initial_value=tf.zeros([layer_size]), name='biases')
+
+            inner_product = tf.matmul(prev_layer_activation, weights) + biases
+            hidden_activation = tf.tanh(inner_product)
+
+            # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
+            tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
+
+            # Add to summary.
+            tf.summary.histogram('model/weights', weights)
+            tf.summary.histogram('model/biases', biases)
+            tf.summary.histogram('model/activation', hidden_activation)
+        # ----End Third layer.
+
         prev_layer_size = layer_size
         prev_layer_activation = hidden_activation
 
