@@ -10,9 +10,9 @@ import numpy as np
 
 from readers import get_reader
 from utils import DataPipeline, random_sample, load_features_mean_var, load_sum_labels
+from utils import MakeSummary, get_input_data_tensors
 from tensorflow import flags, logging, app
 from utils import gap_fn
-from linear_model import LogisticRegression
 
 from os.path import join as path_join
 
@@ -23,117 +23,282 @@ NUM_VALIDATE_EXAMPLES = None
 NUM_TEST_EXAMPLES = 700640
 
 
-def create_hidden_layer(data, name, pre_size, size, pos_activation, pos_transform=None, pos_transform_paras=None):
+def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, l2_reg_rate=None,
+          init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
+          validate_set=None, validate_fn=None, logdir='/tmp/mlp_fuse'):
     """
-    Create a hidden fully connected layer.
-
     Args:
-        data: Data output from previous layer. A tf tensor.
-        name: Layer name.
-        pre_size: Previous layer size, namely number of neurons.
-        size: Number of neurons.
-        pos_activation: Activation function.
-        pos_transform: Other transform, such as dropout and batch normalization.
-    Returns:
-        Transformed data, i.e., data after passing this layer. A tensorflow tensor.
+        train_data_pipeline:
+        epochs: The maximal epochs to pass all training data.
+        pos_weights: 
+        l1_reg_rate:
+        l2_reg_rate: l2 regularization rate.
+        init_learning_rate: Initial learning rate.
+        decay_steps: How many training steps to decay learning rate once.
+        decay_rate: How much to decay learning rate.
+        validate_set:
+        validate_fn:
+        logdir:
     """
-    with tf.name_scope(name):
-        # Initialize weights based on fan-in.
-        weights = tf.Variable(initial_value=tf.truncated_normal(
-            [pre_size, size], stddev=1.0 / np.sqrt(pre_size)), name='weights')
-        biases = tf.Variable(initial_value=tf.zeros([size]), name='biases')
+    reader = train_data_pipeline.reader
+    num_classes = reader.num_classes
+    feature_sizes = reader.feature_sizes
+    feature_size = sum(feature_sizes)
 
-        inner_product = tf.matmul(data, weights) + biases
-        activation = pos_activation(inner_product)
+    # Load data mean and variance.
+    features_mean, features_var = load_features_mean_var(reader)
 
-        # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
-        tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
+    with tf.Graph().as_default() as g:
+        global_step = tf.Variable(initial_value=0, trainable=False, dtype=tf.int32, name='global_step')
 
-        # Add to summary.
-        tf.summary.histogram('model/weights', weights)
-        tf.summary.histogram('model/biases', biases)
-        tf.summary.histogram('model/activation', activation)
+        id_batch, raw_features_batch, labels_batch, num_frames_batch = (
+            get_input_data_tensors(train_data_pipeline, shuffle=True, num_epochs=epochs, name_scope='input'))
 
-        if pos_transform is not None:
-            if pos_transform_paras is None:
-                pos_transform_paras = dict()
-            transformed_data = pos_transform(activation, **pos_transform_paras)
-            return transformed_data
-        else:
-            return activation
-
-
-def multi_layer_transform(data, mean=None, variance=None, **kwargs):
-    """
-    Multi-layer Perceptron transform data, incl. standard scale data using given mean and var.
-
-    Args:
-        data: The second dimension represents the features. A 2D tensorflow tensor.
-        mean: features mean. A 1D numpy array.
-        variance: features variance. A 1D numpy array.
-        kwargs: For accepting other useless arguments. Here, there are reshape and size.
-    Returns:
-        transformed data. A tensorflow tensor.
-    """
-    # Assume current_data consists of mean_rgb and mean_audio.
-    with tf.name_scope('mlp_transform'):
         with tf.name_scope('standard_scale'):
-            features_mean = tf.Variable(initial_value=mean, trainable=False, name='features_mean')
-            features_var = tf.Variable(initial_value=variance, trainable=False, name='features_var')
-            standardized = tf.nn.batch_normalization(data, mean=features_mean, variance=features_var,
+            mean = tf.Variable(initial_value=features_mean, trainable=False, name='features_mean')
+            var = tf.Variable(initial_value=features_var, trainable=False, name='features_var')
+            standardized = tf.nn.batch_normalization(raw_features_batch, mean=mean, variance=var,
                                                      offset=None, scale=None, variance_epsilon=1e-12,
                                                      name='standardized')
 
-        layer_activation = standardized
+        prev_layer_activation = standardized
         # First Hidden layers---#
         layer_idx = 1
 
         # mean_rgb
         layer_name_rgb = 'hidden_{}_rgb'.format(layer_idx)
-        layer_size_rgb = 600
-        # Try relu and tanh, no sigmoid.
-        hidden_activation_rgb = create_hidden_layer(layer_activation[:, :1024],
-                                                    layer_name_rgb, 1024, layer_size_rgb, tf.nn.tanh)
+        layer_size_rgb = 800
+
+        with tf.name_scope(layer_name_rgb):
+            # Initialize weights based on fan-in.
+            weights = tf.Variable(initial_value=tf.truncated_normal(
+                [1024, layer_size_rgb], stddev=1.0 / np.sqrt(1024)), name='weights')
+            biases = tf.Variable(initial_value=tf.zeros([layer_size_rgb]), name='biases')
+
+            inner_product = tf.matmul(prev_layer_activation[:, :1024], weights) + biases
+            hidden_activation_rgb = tf.tanh(inner_product)
+
+            # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
+            tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
+
+            # Add to summary.
+            tf.summary.histogram('model/weights', weights)
+            tf.summary.histogram('model/biases', biases)
+            tf.summary.histogram('model/activation', hidden_activation_rgb)
+
         # mean_audio
         layer_name_audio = 'hidden_{}_audio'.format(layer_idx)
-        layer_size_audio = 64
-        hidden_activation_audio = create_hidden_layer(layer_activation[:, 1024:],
-                                                      layer_name_audio, 128, layer_size_audio, tf.nn.tanh)
+        layer_size_audio = 80
 
-        layer_activation = tf.concat([hidden_activation_rgb, hidden_activation_audio], 1,
-                                     name='hidden_{}_activation'.format(layer_idx))
-        # ---First Hidden layers#
+        with tf.name_scope(layer_name_audio):
+            # Initialize weights based on fan-in.
+            weights = tf.Variable(initial_value=tf.truncated_normal(
+                [128, layer_size_audio], stddev=1.0 / np.sqrt(128)), name='weights')
+            biases = tf.Variable(initial_value=tf.zeros([layer_size_audio]), name='biases')
 
-        """
-        # Second Hidden layers---#
+            inner_product = tf.matmul(prev_layer_activation[:, 1024:], weights) + biases
+            hidden_activation_audio = tf.tanh(inner_product)
+
+            # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
+            tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
+
+            # Add to summary.
+            tf.summary.histogram('model/weights', weights)
+            tf.summary.histogram('model/biases', biases)
+            tf.summary.histogram('model/activation', hidden_activation_audio)
+        # ----End first layer.
+
+        prev_layer_size = layer_size_rgb + layer_size_audio
+        prev_layer_activation = tf.concat([hidden_activation_rgb, hidden_activation_audio], 1,
+                                          name='hidden_{}_activation'.format(layer_idx))
+
+        # First Hidden layers---#
         layer_idx = 2
         layer_name = 'hidden_{}'.format(layer_idx)
-        layer_size = 200
-        hidden_activation = create_hidden_layer(current_data, layer_name, current_size, layer_size, tf.tanh)
-        # ---Second Hidden layers#
-        current_size = layer_size
-        current_data = hidden_activation
-        """
+        layer_size = 600
 
-        return layer_activation
+        with tf.name_scope(layer_name):
+            # Initialize weights based on fan-in.
+            weights = tf.Variable(initial_value=tf.truncated_normal(
+                [prev_layer_size, layer_size], stddev=1.0 / np.sqrt(prev_layer_size)), name='weights')
+            biases = tf.Variable(initial_value=tf.zeros([layer_size]), name='biases')
+
+            inner_product = tf.matmul(prev_layer_activation, weights) + biases
+            hidden_activation = tf.tanh(inner_product)
+
+            # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
+            tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
+
+            # Add to summary.
+            tf.summary.histogram('model/weights', weights)
+            tf.summary.histogram('model/biases', biases)
+            tf.summary.histogram('model/activation', hidden_activation)
+
+        # ----End first layer.
+        prev_layer_size = layer_size
+        prev_layer_activation = hidden_activation
+
+        # One-vs-all logistic regression layer.
+        with tf.name_scope('one_vs_all_log_reg'):
+            # Define num_classes logistic regression models parameters.
+            weights = tf.Variable(initial_value=tf.truncated_normal(
+                [prev_layer_size, num_classes], stddev=1.0 / np.sqrt(prev_layer_size)),
+                dtype=tf.float32, name='weights')
+            # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
+            tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
+            tf.summary.histogram('model/weights', weights)
+
+            biases = tf.Variable(initial_value=tf.zeros([num_classes]), name='biases')
+            tf.summary.histogram('model/biases', biases)
+
+            output = tf.add(tf.matmul(prev_layer_activation, weights), biases, name='output')
+
+            float_labels = tf.cast(labels_batch, tf.float32, name='float_labels')
+            pred_prob = tf.nn.sigmoid(output, name='pred_probability')
+
+        with tf.name_scope('train'):
+            if pos_weights is None:
+                loss_per_ex_label = tf.nn.sigmoid_cross_entropy_with_logits(
+                    labels=float_labels, logits=output, name='x_entropy_per_ex_label')
+            else:
+                loss_per_ex_label = tf.nn.weighted_cross_entropy_with_logits(
+                    targets=float_labels, logits=output, pos_weight=pos_weights,
+                    name='x_entropy_per_ex_label')
+
+            # Sum over label set.
+            loss_per_ex = tf.reduce_sum(loss_per_ex_label, axis=1, name='loss_per_ex')
+            # Mean over batch.
+            loss = tf.reduce_mean(loss_per_ex, name='x_entropy')
+            tf.summary.scalar('loss/xentropy', loss)
+
+            # Add regularization.
+            reg_losses = []
+            # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
+            to_regularize = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+            if l1_reg_rate:
+                l1_reg_losses = [tf.reduce_sum(tf.abs(w)) for w in to_regularize]
+                l1_reg_loss = tf.add_n(l1_reg_losses, name='l1_reg_loss')
+                tf.summary.scalar('loss/l1_reg_loss', l1_reg_loss)
+                reg_losses.append(tf.multiply(l1_reg_rate, l1_reg_loss))
+
+            if l2_reg_rate:
+                l2_reg_losses = [tf.reduce_sum(tf.square(w)) for w in to_regularize]
+                l2_reg_loss = tf.add_n(l2_reg_losses, name='l2_loss')
+                tf.summary.scalar('loss/l2_reg_loss', l2_reg_loss)
+                reg_losses.append(tf.multiply(l2_reg_rate, l2_reg_loss))
+
+            reg_loss = tf.add_n(reg_losses, name='reg_loss')
+
+            final_loss = tf.add(loss, reg_loss, name='final_loss')
+
+        with tf.name_scope('optimization'):
+            # RMSPropOptimizer
+            optimizer = tf.train.RMSPropOptimizer(learning_rate=init_learning_rate)
+            # Decayed learning rate.
+            # rough_num_examples_processed = tf.multiply(global_step, batch_size)
+            # adap_learning_rate = tf.train.exponential_decay(init_learning_rate, rough_num_examples_processed,
+            #                                                 decay_steps, decay_rate, staircase=True,
+            #                                                 name='adap_learning_rate')
+            # tf.summary.scalar('learning_rate', adap_learning_rate)
+            # GradientDescentOptimizer
+            # optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
+            # MomentumOptimizer
+            # optimizer = tf.train.MomentumOptimizer(adap_learning_rate, 0.9, use_nesterov=True)
+            train_op = optimizer.minimize(final_loss, global_step=global_step)
+
+        summary_op = tf.summary.merge_all()
+        # summary_op = tf.constant(1.0)
+
+        # num_epochs needs local variables to be initialized. Put this line after all other graph construction.
+        init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
+
+        # Add to collection. In inference, get collection and feed it with test data.
+        tf.add_to_collection('raw_features_batch', raw_features_batch)
+        tf.add_to_collection('predictions', pred_prob)
+
+        # To save global variables and savable objects, i.e., var_list is None.
+        # Using rbf transform will also save centers and scaling factors.
+        saver = tf.train.Saver(max_to_keep=50, keep_checkpoint_every_n_hours=0.15)
+
+    # Start or restore training.
+    # To avoid summary causing memory usage peak, manually save summaries.
+    sv = tf.train.Supervisor(graph=g, init_op=init_op, logdir=logdir,
+                             global_step=global_step, summary_op=None,
+                             save_model_secs=600, saver=saver)
+
+    with sv.managed_session() as sess:
+        logging.info("Entering training loop...")
+        for step in xrange(1000000):
+            if sv.should_stop():
+                # Save the final model and break.
+                saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
+                break
+
+            if step % 500 == 0:
+                if validate_fn is not None:
+                    _, summary, train_pred_prob_batch, train_labels_batch, global_step_val = sess.run(
+                        [train_op, summary_op, pred_prob, labels_batch, global_step])
+
+                    # Evaluate on train data.
+                    train_per = validate_fn(predictions=train_pred_prob_batch, labels=train_labels_batch)
+                    sv.summary_writer.add_summary(
+                        MakeSummary('train/{}'.format(validate_fn.func_name), train_per),
+                        global_step_val)
+                    logging.info('Step {}, train {}: {}.'.format(global_step_val,
+                                                                 validate_fn.func_name, train_per))
+                else:
+                    _, summary, global_step_val = sess.run(
+                        [train_op, summary_op, global_step])
+
+                # Add train summary.
+                sv.summary_computed(sess, summary, global_step=global_step_val)
+
+                # Compute validate loss and performance (validate_fn).
+                if validate_set is not None:
+                    validate_data, validate_labels = validate_set
+                    if validate_fn is not None:
+                        # Feed validate set. Normalization is not recommended.
+                        validate_loss_val, validate_pred_prob_val = sess.run(
+                            [loss, pred_prob], feed_dict={raw_features_batch: validate_data,
+                                                          labels_batch: validate_labels})
+                        validate_per = validate_fn(predictions=validate_pred_prob_val, labels=validate_labels)
+                        sv.summary_writer.add_summary(
+                            MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
+                            global_step_val)
+                        logging.info('Step {}, validate {}: {}.'.format(global_step_val,
+                                                                        validate_fn.func_name, validate_per))
+                    else:
+                        validate_loss_val = sess.run(loss,
+                                                     feed_dict={raw_features_batch: validate_data,
+                                                                labels_batch: validate_labels})
+                    # Add validate summary.
+                    sv.summary_writer.add_summary(
+                        MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
+
+            elif step % 200 == 0:
+                _, summary, global_step_val = sess.run(
+                    [train_op, summary_op, global_step])
+                sv.summary_computed(sess, summary, global_step=global_step_val)
+            else:
+                sess.run(train_op)
+
+        logging.info("Exited training loop.")
+
+    # Session will close automatically when with clause exits.
+    # sess.close()
+    sv.stop()
 
 
 def main(unused_argv):
-    """
-        init_learning_rate: Initial learning rate.
-        decay_steps: How many training steps to decay learning rate once.
-        decay_rate: How much to decay learning rate.
-        l2_reg_rate: l2 regularization rate.
-        epochs: The maximal epochs to pass all training data.
-    """
     logging.set_verbosity(logging.INFO)
 
     start_new_model = FLAGS.start_new_model
-    output_dir = FLAGS.output_dir
+    logdir = FLAGS.logdir
 
     init_learning_rate = FLAGS.init_learning_rate
     decay_steps = FLAGS.decay_steps
     decay_rate = FLAGS.decay_rate
+    l1_reg_rate = FLAGS.l1_reg_rate
     l2_reg_rate = FLAGS.l2_reg_rate
     train_epochs = FLAGS.train_epochs
 
@@ -155,43 +320,33 @@ def main(unused_argv):
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
                                        batch_size=batch_size, num_readers=num_readers)
 
-    # If start a new model or output dir does not exist, truly start a new model.
-    start_new_model = start_new_model or (not tf.gfile.Exists(output_dir))
-
-    if start_new_model:
-        # Load train data mean and std.
-        train_features_mean, train_features_var = load_features_mean_var(reader)
-
-        tr_data_fn = multi_layer_transform
-        tr_data_paras = {'mean': train_features_mean, 'variance': train_features_var,
-                         'reshape': True, 'size': 664}
-
-        # Set pos_weights for extremely imbalanced situation in one-vs-all classifiers.
+    if start_new_model and tf.gfile.Exists(logdir):
+        logging.info('Starting a new model...')
+        # Start new model, delete existing checkpoints.
         try:
-            # Load sum_labels in training set, numpy float format to compute pos_weights.
-            train_sum_labels = load_sum_labels()
-            # num_neg / num_pos, assuming neg_weights === 1.0.
-            pos_weights = np.sqrt(float(NUM_TRAIN_EXAMPLES) / train_sum_labels - 1.0)
-            logging.info('Computing pos_weights based on sum_labels in train set successfully.')
-        except:
-            logging.error('Cannot load train sum_labels. Use default value.')
-            pos_weights = None
-        finally:
-            pos_weights = None
-    else:
-        tr_data_fn = None
-        tr_data_paras = dict()
+            tf.gfile.DeleteRecursively(logdir)
+        except tf.errors.OpError:
+            logging.error('Failed to delete dir {}.'.format(logdir))
+        else:
+            logging.info('Succeeded to delete train dir {}.'.format(logdir))
+
+    # Set pos_weights for extremely imbalanced situation in one-vs-all classifiers.
+    try:
+        # Load sum_labels in training set, numpy float format to compute pos_weights.
+        train_sum_labels = load_sum_labels()
+        # num_neg / num_pos, assuming neg_weights === 1.0.
+        pos_weights = np.sqrt(float(NUM_TRAIN_EXAMPLES) / train_sum_labels - 1.0)
+        logging.info('Computing pos_weights based on sum_labels in train set successfully.')
+    except IOError:
+        logging.error('Cannot load train sum_labels. Use default value.')
+        pos_weights = None
+    finally:
+        logging.warn('Not to use positive weights.')
         pos_weights = None
 
-    # Run logistic regression.
-    log_reg = LogisticRegression(logdir=output_dir)
-    log_reg.fit(train_data_pipeline, start_new_model=start_new_model,
-                tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
-                validate_set=(validate_data, validate_labels), validate_fn=gap_fn, bootstrap=False,
-                init_learning_rate=init_learning_rate, decay_steps=decay_steps, decay_rate=decay_rate,
-                epochs=train_epochs, l1_reg_rate=None, l2_reg_rate=l2_reg_rate, pos_weights=pos_weights,
-                initial_weights=None, initial_biases=None)
-
+    train(train_data_pipeline, epochs=train_epochs, pos_weights=pos_weights, l1_reg_rate=l1_reg_rate,
+          l2_reg_rate=l2_reg_rate, init_learning_rate=init_learning_rate, validate_set=(validate_data, validate_labels),
+          validate_fn=gap_fn, logdir=logdir)
 
 if __name__ == '__main__':
     flags.DEFINE_string('model_type', 'video', 'video or frame level model')
@@ -225,12 +380,14 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
 
+    flags.DEFINE_float('l1_reg_rate', None, 'l1 regularization rate.')
+    
     flags.DEFINE_float('l2_reg_rate', 0.001, 'l2 regularization rate.')
 
     flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
     # Added current timestamp.
-    flags.DEFINE_string('output_dir', '/tmp/video_level/mlp',
+    flags.DEFINE_string('logdir', '/tmp/video_level/mlp_fuse',
                         'The directory where intermediate and model checkpoints should be written.')
 
     app.run()
