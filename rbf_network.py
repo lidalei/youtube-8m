@@ -428,7 +428,7 @@ if __name__ == '__main__':
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
     # Regularization rates.
     flags.DEFINE_float('l1_reg_rate', None, 'l1 regularization rate.')
-    flags.DEFINE_float('l2_reg_rate', 0.01, 'l2 regularization rate.')
+    flags.DEFINE_float('l2_reg_rate', None, 'l2 regularization rate.')
 
     flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
