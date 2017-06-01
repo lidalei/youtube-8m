@@ -111,7 +111,7 @@ def main(unused_argv):
             # Linear search helps little.
             linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
             linear_clf.fit(data_pipeline=train_data_pipeline,
-                           l2_regs=[0.001, 0.01, 0.1, 0.5, 1.0, 10.0, 50.0, 500.0],
+                           l2_regs=[0.000001, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0],
                            validate_set=(validate_data, validate_labels), line_search=True)
             linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
 
