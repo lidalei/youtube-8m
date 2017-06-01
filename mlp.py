@@ -34,6 +34,7 @@ def create_hidden_layer(data, name, pre_size, size, pos_activation, pos_transfor
         size: Number of neurons.
         pos_activation: Activation function.
         pos_transform: Other transform, such as dropout and batch normalization.
+        pos_transform_paras: pos transform parameters.
     Returns:
         Transformed data, i.e., data after passing this layer. A tensorflow tensor.
     """
@@ -205,7 +206,7 @@ if __name__ == '__main__':
     # 1024,128
     flags.DEFINE_string('feature_sizes', '1024,128', 'Dimensions of features to be used, separated by ,.')
 
-    flags.DEFINE_integer('batch_size', 200, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 1024, 'Size of batch processing.')
     flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     flags.DEFINE_bool('start_new_model', True, 'To start a new model or restore from output dir.')
@@ -217,7 +218,7 @@ if __name__ == '__main__':
 
     flags.DEFINE_float('decay_rate', 0.95, 'Float variable indicating how much to decay.')
 
-    flags.DEFINE_float('l2_reg_rate', 0.001, 'l2 regularization rate.')
+    flags.DEFINE_float('l2_reg_rate', None, 'l2 regularization rate.')
 
     flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 

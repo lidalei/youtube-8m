@@ -382,7 +382,10 @@ class LogisticRegression(object):
                 tf.summary.scalar('loss/l2_reg_loss', l2_reg_loss)
                 reg_losses.append(tf.multiply(self.l2_reg_rate, l2_reg_loss))
 
-            reg_loss = tf.add_n(reg_losses, name='reg_loss')
+            if len(reg_losses) > 0:
+                reg_loss = tf.add_n(reg_losses, name='reg_loss')
+            else:
+                reg_loss = tf.constant(0.0, name='zero_reg_loss')
 
             final_loss = tf.add(loss, reg_loss, name='final_loss')
 
