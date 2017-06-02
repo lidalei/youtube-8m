@@ -4,6 +4,11 @@ Multi-layer Perceptron (MLP).
 Note:
     1. Normalizing features will lead to much faster convergence but worse performance.
     2. Instead, standard scaling features will help achieve better performance.
+    
+Credit.
+    batch_norm_layer come from https://stackoverflow.com/a/44020133 and
+    https://github.com/pkmital/tensorflow_tutorials/blob/master/python/libs/batch_norm.py.
+    Thanks a lot!
 """
 import tensorflow as tf
 import numpy as np
@@ -21,6 +26,51 @@ NUM_TRAIN_EXAMPLES = 4906660
 # TODO
 NUM_VALIDATE_EXAMPLES = None
 NUM_TEST_EXAMPLES = 700640
+
+
+def batch_norm_layer(x, is_training, decay=0.999, epsilon=1e-5, scope='bn'):
+    """
+    Performs a batch normalization layer
+
+    Args:
+        x: input tensor
+        is_training: python boolean value
+        decay: the moving average decay
+        epsilon: the variance epsilon - a small float number to avoid dividing by 0
+        scope: scope name
+
+    Returns:
+        The ops of a batch normalization layer
+    """
+    with tf.name_scope(scope):
+        shape = x.get_shape().as_list()
+        size = shape[-1]
+        # beta: a trainable shift value
+        beta = tf.Variable(initial_value=tf.zeros([size]), trainable=True, name='beta')
+        # gamma: a trainable scale factor
+        gamma = tf.Variable(initial_value=tf.ones([size]), trainable=True, name='gamma')
+
+        # tf.nn.moments == Calculate the mean and the variance of the tensor x.
+        # The last dimension contains values to compute mean.
+        batch_mean, batch_var = tf.nn.moments(x, range(len(shape)-1), name='moments')
+
+        # Create an ExponentialMovingAverage object
+        ema = tf.train.ExponentialMovingAverage(decay=decay)
+
+        # apply creates the shadow variables, and add ops to maintain moving averages of mean and variance.
+        maintain_averages_op = ema.apply([batch_mean, batch_var])
+        tf.add_to_collection(tf.GraphKeys.UPDATE_OPS, maintain_averages_op)
+
+        # Inference uses population average and variance.
+        ema_mean, ema_var = ema.average(batch_mean), ema.average(batch_var)
+
+        mean, var = tf.cond(
+            is_training, lambda: (batch_mean, batch_var), lambda: (ema_mean, ema_var)
+        )
+
+        bn = tf.nn.batch_normalization(x, mean, var, offset=beta, scale=gamma, variance_epsilon=epsilon)
+
+    return bn
 
 
 def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, l2_reg_rate=None,
@@ -54,6 +104,9 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
         id_batch, raw_features_batch, labels_batch, num_frames_batch = (
             get_input_data_tensors(train_data_pipeline, shuffle=True, num_epochs=epochs, name_scope='input'))
 
+        # Used for dropout and batch normalization.
+        phase_train_pl = tf.placeholder(tf.bool, [], name='phase_train_pl')
+
         with tf.name_scope('standard_scale'):
             mean = tf.Variable(initial_value=features_mean, trainable=False, name='features_mean')
             var = tf.Variable(initial_value=features_var, trainable=False, name='features_var')
@@ -76,15 +129,19 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
             biases = tf.Variable(initial_value=tf.zeros([layer_size_rgb]), name='biases')
 
             inner_product = tf.matmul(prev_layer_activation[:, :1024], weights) + biases
-            hidden_activation_rgb = tf.tanh(inner_product)
+
+            # Add batch normalization. It doesn't change tensor shape.
+            bn = batch_norm_layer(inner_product, phase_train_pl, scope='bn_{}'.format(layer_idx))
+
+            hidden_activation_rgb = tf.tanh(bn)
 
             # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
             tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
 
             # Add to summary.
-            tf.summary.histogram('model/weights', weights)
-            tf.summary.histogram('model/biases', biases)
-            tf.summary.histogram('model/activation', hidden_activation_rgb)
+            # tf.summary.histogram('model/weights', weights)
+            # tf.summary.histogram('model/biases', biases)
+            # tf.summary.histogram('model/activation', hidden_activation_rgb)
 
         # mean_audio
         layer_name_audio = 'hidden_{}_audio'.format(layer_idx)
@@ -97,15 +154,19 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
             biases = tf.Variable(initial_value=tf.zeros([layer_size_audio]), name='biases')
 
             inner_product = tf.matmul(prev_layer_activation[:, 1024:], weights) + biases
-            hidden_activation_audio = tf.tanh(inner_product)
+
+            # Add batch normalization. It doesn't change tensor shape.
+            bn = batch_norm_layer(inner_product, phase_train_pl, scope='bn_{}'.format(layer_idx))
+
+            hidden_activation_audio = tf.tanh(bn)
 
             # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
             tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
 
             # Add to summary.
-            tf.summary.histogram('model/weights', weights)
-            tf.summary.histogram('model/biases', biases)
-            tf.summary.histogram('model/activation', hidden_activation_audio)
+            # tf.summary.histogram('model/weights', weights)
+            # tf.summary.histogram('model/biases', biases)
+            # tf.summary.histogram('model/activation', hidden_activation_audio)
         # ----End first layer.
 
         prev_layer_size = layer_size_rgb + layer_size_audio
@@ -124,15 +185,19 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
             biases = tf.Variable(initial_value=tf.zeros([layer_size]), name='biases')
 
             inner_product = tf.matmul(prev_layer_activation, weights) + biases
-            hidden_activation = tf.tanh(inner_product)
+
+            # Add batch normalization. It doesn't change tensor shape.
+            bn = batch_norm_layer(inner_product, phase_train_pl, scope='bn_{}'.format(layer_idx))
+
+            hidden_activation = tf.tanh(bn)
 
             # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
             tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
 
             # Add to summary.
-            tf.summary.histogram('model/weights', weights)
-            tf.summary.histogram('model/biases', biases)
-            tf.summary.histogram('model/activation', hidden_activation)
+            # tf.summary.histogram('model/weights', weights)
+            # tf.summary.histogram('model/biases', biases)
+            # tf.summary.histogram('model/activation', hidden_activation)
         # ----End Second layer.
         prev_layer_size = layer_size
         prev_layer_activation = hidden_activation
@@ -145,10 +210,10 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                 dtype=tf.float32, name='weights')
             # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
             tf.add_to_collection(tf.GraphKeys.REGULARIZATION_LOSSES, weights)
-            tf.summary.histogram('model/weights', weights)
+            # tf.summary.histogram('model/weights', weights)
 
             biases = tf.Variable(initial_value=tf.zeros([num_classes]), name='biases')
-            tf.summary.histogram('model/biases', biases)
+            # tf.summary.histogram('model/biases', biases)
 
             output = tf.add(tf.matmul(prev_layer_activation, weights), biases, name='output')
 
@@ -195,17 +260,25 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
         with tf.name_scope('optimization'):
             # RMSPropOptimizer
             optimizer = tf.train.RMSPropOptimizer(learning_rate=init_learning_rate)
-            # Decayed learning rate.
-            # rough_num_examples_processed = tf.multiply(global_step, batch_size)
-            # adap_learning_rate = tf.train.exponential_decay(init_learning_rate, rough_num_examples_processed,
-            #                                                 decay_steps, decay_rate, staircase=True,
-            #                                                 name='adap_learning_rate')
-            # tf.summary.scalar('learning_rate', adap_learning_rate)
-            # GradientDescentOptimizer
-            # optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
-            # MomentumOptimizer
-            # optimizer = tf.train.MomentumOptimizer(adap_learning_rate, 0.9, use_nesterov=True)
-            train_op = optimizer.minimize(final_loss, global_step=global_step)
+
+            # Before computing gradient, update batch mean and variance.
+            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+            if update_ops:
+                with tf.control_dependencies(update_ops):
+                    barrier = tf.no_op(name="gradient_barrier")
+                    with tf.control_dependencies([barrier]):
+                        # Decayed learning rate.
+                        # rough_num_examples_processed = tf.multiply(global_step, batch_size)
+                        # adap_learning_rate = tf.train.exponential_decay(init_learning_rate,
+                        #                                                 rough_num_examples_processed,
+                        #                                                 decay_steps, decay_rate, staircase=True,
+                        #                                                 name='adap_learning_rate')
+                        # tf.summary.scalar('learning_rate', adap_learning_rate)
+                        # GradientDescentOptimizer
+                        # optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
+                        # MomentumOptimizer
+                        # optimizer = tf.train.MomentumOptimizer(adap_learning_rate, 0.9, use_nesterov=True)
+                        train_op = optimizer.minimize(final_loss, global_step=global_step)
 
         summary_op = tf.summary.merge_all()
         # summary_op = tf.constant(1.0)
@@ -214,6 +287,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
         init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
         # Add to collection. In inference, get collection and feed it with test data.
+        tf.add_to_collection('phase_train_pl', phase_train_pl)
         tf.add_to_collection('raw_features_batch', raw_features_batch)
         tf.add_to_collection('predictions', pred_prob)
 
@@ -238,7 +312,8 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
             if step % 500 == 0:
                 if validate_fn is not None:
                     _, summary, train_pred_prob_batch, train_labels_batch, global_step_val = sess.run(
-                        [train_op, summary_op, pred_prob, labels_batch, global_step])
+                        [train_op, summary_op, pred_prob, labels_batch, global_step],
+                        feed_dict={phase_train_pl: True})
 
                     # Evaluate on train data.
                     train_per = validate_fn(predictions=train_pred_prob_batch, labels=train_labels_batch)
@@ -249,7 +324,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                                                                  validate_fn.func_name, train_per))
                 else:
                     _, summary, global_step_val = sess.run(
-                        [train_op, summary_op, global_step])
+                        [train_op, summary_op, global_step], feed_dict={phase_train_pl: True})
 
                 # Add train summary.
                 sv.summary_computed(sess, summary, global_step=global_step_val)
@@ -261,22 +336,22 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                         # Feed validate set. Normalization is not recommended.
                         validate_loss_val, validate_pred_prob_val = sess.run(
                             [loss, pred_prob], feed_dict={raw_features_batch: validate_data,
-                                                          labels_batch: validate_labels})
+                                                          labels_batch: validate_labels, phase_train_pl: False})
                         validate_per = validate_fn(predictions=validate_pred_prob_val, labels=validate_labels)
                         sv.summary_writer.add_summary(
                             MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
                             global_step_val)
-                        logging.info('Step {}, validate {}: {}.'.format(global_step_val,
-                                                                        validate_fn.func_name, validate_per))
+                        logging.info('Step {}, validate {}: {}\n.'.format(global_step_val,
+                                                                          validate_fn.func_name, validate_per))
                     else:
-                        validate_loss_val = sess.run(loss,
-                                                     feed_dict={raw_features_batch: validate_data,
-                                                                labels_batch: validate_labels})
+                        validate_loss_val = sess.run(loss, feed_dict={raw_features_batch: validate_data,
+                                                                      labels_batch: validate_labels,
+                                                                      phase_train_pl: False})
                     # Add validate summary.
                     sv.summary_writer.add_summary(
                         MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
             else:
-                sess.run(train_op)
+                sess.run(train_op, feed_dict={phase_train_pl: True})
 
         logging.info("Exited training loop.")
 
@@ -341,8 +416,8 @@ def main(unused_argv):
         pos_weights = None
 
     train(train_data_pipeline, epochs=train_epochs, pos_weights=pos_weights, l1_reg_rate=l1_reg_rate,
-          l2_reg_rate=l2_reg_rate, init_learning_rate=init_learning_rate, validate_set=(validate_data, validate_labels),
-          validate_fn=gap_fn, logdir=logdir)
+          l2_reg_rate=l2_reg_rate, init_learning_rate=init_learning_rate,
+          validate_set=(validate_data, validate_labels), validate_fn=gap_fn, logdir=logdir)
 
 if __name__ == '__main__':
     flags.DEFINE_string('model_type', 'video', 'video or frame level model')
