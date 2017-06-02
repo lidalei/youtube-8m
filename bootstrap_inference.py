@@ -35,6 +35,7 @@ class BootstrapInference(object):
         self.sess_list = []
         self.video_input_batch_list = []
         self.pred_prob_list = []
+        self.phase_train_pl_list = []
 
         for train_model_dir in train_model_dirs_list:
             # Load pre-trained graph and corresponding variables.
@@ -55,11 +56,16 @@ class BootstrapInference(object):
                 # Get collections to be used in making predictions for test data.
                 video_input_batch = tf.get_collection('raw_features_batch')[0]
                 pred_prob = tf.get_collection('predictions')[0]
+                phase_train_pl = tf.get_collection('phase_train_pl')
 
                 # Append session and input and predictions.
                 self.sess_list.append(sess)
                 self.video_input_batch_list.append(video_input_batch)
                 self.pred_prob_list.append(pred_prob)
+                if len(phase_train_pl) >= 1:
+                    self.phase_train_pl_list.append({phase_train_pl[0]: False})
+                else:
+                    self.phase_train_pl_list.append({})
 
     def __del__(self):
         for sess in self.sess_list:
@@ -95,9 +101,9 @@ class BootstrapInference(object):
                         video_id_batch_val, video_batch_val))
 
                     batch_predictions_prob_list = []
-                    for sess, video_input_batch, pred_prob in zip(self.sess_list,
-                                                                  self.video_input_batch_list,
-                                                                  self.pred_prob_list):
+                    for sess, video_input_batch, pred_prob, phase_train_pl in zip(
+                            self.sess_list, self.video_input_batch_list,
+                            self.pred_prob_list, self.phase_train_pl_list):
                         feature_shape = video_input_batch.get_shape()[-1]
                         # logging.info('Feature shape is {}.'.format(feature_shape))
                         if feature_shape == 128:
@@ -107,8 +113,9 @@ class BootstrapInference(object):
                         else:
                             _video_batch = video_batch_val
 
-                        batch_predictions_prob = sess.run(pred_prob, feed_dict={
-                            video_input_batch: _video_batch})
+                        batch_predictions_prob = sess.run(pred_prob, feed_dict=dict(
+                            {video_input_batch: _video_batch}, **phase_train_pl
+                        ))
                         batch_predictions_prob_list.append(batch_predictions_prob)
 
                     batch_predictions_mean_prob = np.mean(np.stack(batch_predictions_prob_list, axis=0), axis=0)
