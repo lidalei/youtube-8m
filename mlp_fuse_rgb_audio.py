@@ -255,6 +255,14 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
 
             tf.summary.scalar('loss/xentropy', loss)
 
+            # Before computing gradient, update batch mean and variance. From train.py.
+            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+            if update_ops:
+                with tf.control_dependencies(update_ops):
+                    barrier = tf.no_op(name="gradient_barrier")
+                    with tf.control_dependencies([barrier]):
+                        loss = tf.identity(loss)
+
             # Add regularization.
             reg_losses = []
             # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
@@ -278,26 +286,22 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
             final_loss = tf.add(loss, reg_loss, name='final_loss')
 
         with tf.name_scope('optimization'):
-            # Before computing gradient, update batch mean and variance.
-            update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
-            if update_ops:
-                with tf.control_dependencies(update_ops):
-                    barrier = tf.no_op(name="gradient_barrier")
-                    with tf.control_dependencies([barrier]):
-                        # RMSPropOptimizer
-                        optimizer = tf.train.RMSPropOptimizer(learning_rate=init_learning_rate)
-                        # Decayed learning rate.
-                        # rough_num_examples_processed = tf.multiply(global_step, batch_size)
-                        # adap_learning_rate = tf.train.exponential_decay(init_learning_rate,
-                        #                                                 rough_num_examples_processed,
-                        #                                                 decay_steps, decay_rate, staircase=True,
-                        #                                                 name='adap_learning_rate')
-                        # tf.summary.scalar('learning_rate', adap_learning_rate)
-                        # GradientDescentOptimizer
-                        # optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
-                        # MomentumOptimizer
-                        # optimizer = tf.train.MomentumOptimizer(adap_learning_rate, 0.9, use_nesterov=True)
-                        train_op = optimizer.minimize(final_loss, global_step=global_step)
+            # Decayed learning rate.
+            # rough_num_examples_processed = tf.multiply(global_step, batch_size)
+            # adap_learning_rate = tf.train.exponential_decay(init_learning_rate,
+            #                                                 rough_num_examples_processed,
+            #                                                 decay_steps, decay_rate, staircase=True,
+            #                                                 name='adap_learning_rate')
+            # tf.summary.scalar('learning_rate', adap_learning_rate)
+            # GradientDescentOptimizer
+            # optimizer = tf.train.GradientDescentOptimizer(adap_learning_rate)
+            # MomentumOptimizer
+            # optimizer = tf.train.MomentumOptimizer(adap_learning_rate, 0.9, use_nesterov=True)
+            # RMSPropOptimizer
+            optimizer = tf.train.RMSPropOptimizer(learning_rate=init_learning_rate)
+            # Encapsulate optimizer inside the MovingAverageOptimizer.
+            opt = tf.contrib.opt.MovingAverageOptimizer(optimizer)
+            train_op = opt.minimize(final_loss, global_step=global_step)
 
         summary_op = tf.summary.merge_all()
         # summary_op = tf.constant(1.0)
@@ -312,7 +316,8 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
 
         # To save global variables and savable objects, i.e., var_list is None.
         # Using rbf transform will also save centers and scaling factors.
-        saver = tf.train.Saver(max_to_keep=50, keep_checkpoint_every_n_hours=0.15)
+        # saver = tf.train.Saver(max_to_keep=50, keep_checkpoint_every_n_hours=0.15)
+        saver = opt.swapping_saver(max_to_keep=50, keep_checkpoint_every_n_hours=0.15)
 
     # Start or restore training.
     # To avoid summary causing memory usage peak, manually save summaries.
