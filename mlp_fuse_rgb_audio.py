@@ -93,6 +93,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
     reader = train_data_pipeline.reader
     num_classes = reader.num_classes
     feature_sizes = reader.feature_sizes
+    # Assume mean_rgb and mean_audio are used.
     feature_size = sum(feature_sizes)
 
     # Load data mean and variance.
@@ -172,6 +173,9 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
         prev_layer_size = layer_size_rgb + layer_size_audio
         prev_layer_activation = tf.concat([hidden_activation_rgb, hidden_activation_audio], 1,
                                           name='hidden_{}_activation'.format(layer_idx))
+        keep_prob = tf.cond(phase_train_pl, lambda: tf.constant(0.5, name='keep_prob'),
+                            lambda: tf.constant(1.0, name='keep_prob'))
+        prev_layer_activation = tf.nn.dropout(prev_layer_activation, keep_prob)
 
         # Second Hidden layers---#
         layer_idx = 2
@@ -258,15 +262,14 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
             final_loss = tf.add(loss, reg_loss, name='final_loss')
 
         with tf.name_scope('optimization'):
-            # RMSPropOptimizer
-            optimizer = tf.train.RMSPropOptimizer(learning_rate=init_learning_rate)
-
             # Before computing gradient, update batch mean and variance.
             update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
             if update_ops:
                 with tf.control_dependencies(update_ops):
                     barrier = tf.no_op(name="gradient_barrier")
                     with tf.control_dependencies([barrier]):
+                        # RMSPropOptimizer
+                        optimizer = tf.train.RMSPropOptimizer(learning_rate=init_learning_rate)
                         # Decayed learning rate.
                         # rough_num_examples_processed = tf.multiply(global_step, batch_size)
                         # adap_learning_rate = tf.train.exponential_decay(init_learning_rate,
@@ -309,7 +312,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                 saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
                 break
 
-            if step % 500 == 0:
+            if step % 800 == 0:
                 if validate_fn is not None:
                     _, summary, train_pred_prob_batch, train_labels_batch, global_step_val = sess.run(
                         [train_op, summary_op, pred_prob, labels_batch, global_step],
@@ -341,7 +344,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                         sv.summary_writer.add_summary(
                             MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
                             global_step_val)
-                        logging.info('Step {}, validate {}: {}\n.'.format(global_step_val,
+                        logging.info('Step {}, validate {}: {}.\n'.format(global_step_val,
                                                                           validate_fn.func_name, validate_per))
                     else:
                         validate_loss_val = sess.run(loss, feed_dict={raw_features_batch: validate_data,
