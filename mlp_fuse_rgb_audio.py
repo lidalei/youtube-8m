@@ -74,7 +74,7 @@ def batch_norm_layer(x, is_training, decay=0.999, epsilon=1e-5, scope='bn'):
 
 
 def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, l2_reg_rate=None,
-          init_learning_rate=0.01, decay_steps=40000, decay_rate=0.95,
+          init_learning_rate=0.01, decay_steps=NUM_TRAIN_EXAMPLES, decay_rate=0.95, bootstrap=False,
           validate_set=None, validate_fn=None, logdir='/tmp/mlp_fuse'):
     """
     Args:
@@ -86,6 +86,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
         init_learning_rate: Initial learning rate.
         decay_steps: How many training steps to decay learning rate once.
         decay_rate: How much to decay learning rate.
+        bootstrap: To sample data with replacement or not.
         validate_set:
         validate_fn:
         logdir:
@@ -95,6 +96,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
     feature_sizes = reader.feature_sizes
     # Assume mean_rgb and mean_audio are used.
     feature_size = sum(feature_sizes)
+    batch_size = train_data_pipeline.batch_size
 
     # Load data mean and variance.
     features_mean, features_var = load_features_mean_var(reader)
@@ -235,8 +237,22 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
 
             # Sum over label set.
             loss_per_ex = tf.reduce_sum(loss_per_ex_label, axis=1, name='loss_per_ex')
-            # Mean over batch.
-            loss = tf.reduce_mean(loss_per_ex, name='x_entropy')
+
+            #  In addition to class weighting, example weighting is supported.
+            if bootstrap:
+                num_examples = tf.shape(loss_per_ex)[0]
+                sample_indices = tf.random_uniform([num_examples], maxval=num_examples, dtype=tf.int32,
+                                                   name='sample_indices')
+                example_weights = tf.unsorted_segment_sum(tf.ones([num_examples]), sample_indices, num_examples,
+                                                          name='example_weights')
+                # bootstrap-weighted loss.
+                weighted_loss_per_ex = tf.multiply(loss_per_ex, example_weights, name='weighted_loss_per_ex')
+                # Mean over batch.
+                loss = tf.reduce_mean(weighted_loss_per_ex, name='x_entropy')
+            else:
+                # Mean over batch.
+                loss = tf.reduce_mean(loss_per_ex, name='x_entropy')
+
             tf.summary.scalar('loss/xentropy', loss)
 
             # Add regularization.
@@ -244,13 +260,13 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
             # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
             to_regularize = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
             if l1_reg_rate:
-                l1_reg_losses = [tf.reduce_sum(tf.abs(w)) for w in to_regularize]
+                l1_reg_losses = [tf.reduce_mean(tf.abs(w)) for w in to_regularize]
                 l1_reg_loss = tf.add_n(l1_reg_losses, name='l1_reg_loss')
                 tf.summary.scalar('loss/l1_reg_loss', l1_reg_loss)
                 reg_losses.append(tf.multiply(l1_reg_rate, l1_reg_loss))
 
             if l2_reg_rate:
-                l2_reg_losses = [tf.reduce_sum(tf.square(w)) for w in to_regularize]
+                l2_reg_losses = [0.5 * tf.reduce_mean(tf.square(w)) for w in to_regularize]
                 l2_reg_loss = tf.add_n(l2_reg_losses, name='l2_loss')
                 tf.summary.scalar('loss/l2_reg_loss', l2_reg_loss)
                 reg_losses.append(tf.multiply(l2_reg_rate, l2_reg_loss))
@@ -374,6 +390,7 @@ def main(unused_argv):
     decay_rate = FLAGS.decay_rate
     l1_reg_rate = FLAGS.l1_reg_rate
     l2_reg_rate = FLAGS.l2_reg_rate
+    is_bootstrap = FLAGS.is_bootstrap
     train_epochs = FLAGS.train_epochs
 
     model_type, feature_names, feature_sizes = FLAGS.model_type, FLAGS.feature_names, FLAGS.feature_sizes
@@ -419,7 +436,7 @@ def main(unused_argv):
         pos_weights = None
 
     train(train_data_pipeline, epochs=train_epochs, pos_weights=pos_weights, l1_reg_rate=l1_reg_rate,
-          l2_reg_rate=l2_reg_rate, init_learning_rate=init_learning_rate,
+          l2_reg_rate=l2_reg_rate, init_learning_rate=init_learning_rate, bootstrap=is_bootstrap,
           validate_set=(validate_data, validate_labels), validate_fn=gap_fn, logdir=logdir)
 
 if __name__ == '__main__':
@@ -457,6 +474,8 @@ if __name__ == '__main__':
     flags.DEFINE_float('l1_reg_rate', None, 'l1 regularization rate.')
 
     flags.DEFINE_float('l2_reg_rate', None, 'l2 regularization rate.')
+
+    flags.DEFINE_bool('is_bootstrap', False, 'Boolean variable indicating using bootstrap or not.')
 
     flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
