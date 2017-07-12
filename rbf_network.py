@@ -307,7 +307,7 @@ def main(unused_argv):
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
                                           batch_size=batch_size, num_readers=num_readers)
 
-    _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
+    _, validate_data, validate_labels, _ = random_sample(0.005, mask=(False, True, True, False),
                                                          data_pipeline=validate_data_pipeline,
                                                          name_scope='sample_validate')
 
@@ -413,9 +413,9 @@ if __name__ == '__main__':
 
     flags.DEFINE_bool('start_new_model', True, 'To start a new model or restore from output dir.')
 
-    flags.DEFINE_float('num_centers_ratio', 0.005, 'The number of centers in RBF network.')
+    flags.DEFINE_float('num_centers_ratio', 0.0005, 'The number of centers in RBF network.')
 
-    flags.DEFINE_string('dist_metric', 'cosine', 'Distance metric, cosine or euclidean.')
+    flags.DEFINE_string('dist_metric', 'euclidean', 'Distance metric, cosine or euclidean.')
 
     flags.DEFINE_boolean('init_with_linear_clf', True,
                          'Boolean variable indicating whether to init logistic regression with linear classifier.')

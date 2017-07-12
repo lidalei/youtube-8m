@@ -107,7 +107,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_trai
         # Define normalized video batch (features), top k similar videos' similarities and their labels sets.
         video_batch_normalized_initializer = tf.placeholder(tf.float32, video_batch.shape)
         video_batch_normalized = tf.Variable(initial_value=video_batch_normalized_initializer, trainable=False,
-                                             collections=[], name='video_batch_outer')
+                                             collections=[], name='features_batch_outer')
 
         topk_sims_initializer = tf.placeholder(tf.float32, shape=[num_videos, k])
         topk_sims = tf.Variable(initial_value=topk_sims_initializer, collections=[], name='topk_sims')
@@ -122,7 +122,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_trai
 
         # normalization along the last dimension.
         video_batch_inner_normalized = tf.nn.l2_normalize(video_batch_inner, dim=-1,
-                                                          name='video_batch_inner_normalized')
+                                                          name='features_batch_inner_normalized')
 
         # compute cosine similarities
         similarities = tf.matmul(video_batch_normalized, video_batch_inner_normalized, transpose_b=True,
@@ -141,7 +141,7 @@ def find_k_nearest_neighbors(video_id_batch, video_batch, data_pipeline, is_trai
             update_topk_sims_op = tf.assign(topk_sims, updated_topk_sims,
                                             name='update_topk_sims')
         with tf.name_scope('update_topk_labels'):
-            top_2k_video_labels = tf.concat([topk_labels, batch_topk_labels], 1, name='top_2k_video_labels')
+            top_2k_video_labels = tf.concat([topk_labels, batch_topk_labels], 1, name='top_2k_labels')
             flatten_top2k_labels = tf.reshape(top_2k_video_labels, [-1, num_classes])
             idx_inc = tf.expand_dims(tf.range(0, num_videos * 2 * k, 2 * k, dtype=tf.int32), axis=1)
             idx_in_flatten = tf.add(updated_topk_sims_indices, idx_inc)
@@ -537,11 +537,11 @@ if __name__ == '__main__':
 
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/train/trainaQ.tfrecord',
+                        '/Users/Sophie/Documents/youtube-8m-data/train_validate/traina[1-9].tfrecord',
                         'File glob for the training data set.')
 
     flags.DEFINE_string('validate_data_pattern',
-                        '/Users/Sophie/Documents/youtube-8m-data/validate/validateo*.tfrecord',
+                        '/Users/Sophie/Documents/youtube-8m-data/train_validate/validateo*.tfrecord',
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     flags.DEFINE_string('test_data_pattern',
@@ -554,9 +554,9 @@ if __name__ == '__main__':
     flags.DEFINE_string('feature_sizes', '128', 'Dimensions of features to be used, separated by ,.')
 
     # Set by the memory limit. Larger values will reduce data passing times. For debug, use a small value, e.g., 1024.
-    flags.DEFINE_integer('batch_size', 20480, 'Size of batch processing.')
+    flags.DEFINE_integer('batch_size', 2048, 'Size of batch processing.')
     # For debug, use a single reader.
-    flags.DEFINE_integer('num_readers', 3, 'Number of readers to form a batch.')
+    flags.DEFINE_integer('num_readers', 2, 'Number of readers to form a batch.')
 
     # To find the best k in validate set, set it as True.
     # After getting the best k, setting this as False when using train and validate set to re-train the model.
@@ -571,7 +571,7 @@ if __name__ == '__main__':
     flags.DEFINE_string('model_dir', '/tmp/ml-knn',
                         'The directory to which prior and posterior probabilities should be written.')
 
-    flags.DEFINE_boolean('is_train', False, 'Boolean variable to indicate training or test.')
+    flags.DEFINE_boolean('is_train', True, 'Boolean variable to indicate training or test.')
 
     flags.DEFINE_string('output_file', '/tmp/ml-knn/predictions.csv', 'The file to save the predictions to.')
 

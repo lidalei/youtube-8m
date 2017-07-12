@@ -83,10 +83,11 @@ class KMeans(object):
             # Objective function. POSSIBLE ISSUE, overflow in initial iteration.
             total_dist = tf.Variable(initial_value=0.0, dtype=tf.float32, name='total_distance')
             # Define sum per clu as Variable and use placeholder to hold large number of centers.
-            per_clu_sum_initializer = tf.placeholder(tf.float32, shape=self.current_centers.shape)
+            per_clu_sum_initializer = tf.placeholder(tf.float32, shape=self.current_centers.shape,
+                                                     name='per_clu_sum_initializer')
             per_clu_sum = tf.Variable(initial_value=per_clu_sum_initializer,
                                       trainable=False, collections=[], name='per_cluster_sum')
-            per_clu_count = tf.Variable(initial_value=tf.zeros([num_centers]), dtype=tf.float32)
+            per_clu_count = tf.Variable(initial_value=tf.zeros([num_centers]), dtype=tf.float32, name='per_clu_count')
             if self.return_mean_clu_dist:
                 per_clu_total_dist = tf.Variable(initial_value=tf.zeros([num_centers]), name='per_clu_total_dist')
             else:
@@ -109,44 +110,49 @@ class KMeans(object):
                     squared_sub = tf.square(sub)
                     # Compute distances with centers video-wisely. Shape [batch_size, num_initial_centers].
                     # negative === -.
-                    neg_dist = tf.negative(tf.sqrt(tf.reduce_sum(squared_sub, axis=-1)))
+                    neg_dist = tf.negative(tf.sqrt(tf.reduce_sum(squared_sub, axis=-1, name='distance')))
                 # Compute assignments and the distance with nearest centers video-wisely.
                 neg_topk_nearest_dist, topk_assignments = tf.nn.top_k(neg_dist, k=1)
                 nearest_topk_dist = tf.negative(neg_topk_nearest_dist)
                 # Remove the last dimension due to k.
-                nearest_dist = tf.squeeze(nearest_topk_dist, axis=[-1])
-                assignments = tf.squeeze(topk_assignments, axis=[-1])
+                nearest_dist = tf.squeeze(nearest_topk_dist, axis=[-1], name='nearest_dist')
+                assignments = tf.squeeze(topk_assignments, axis=[-1], name='assignment')
 
                 # Compute new centers sum and number of videos that belong to each cluster within this video batch.
-                batch_per_clu_sum = tf.unsorted_segment_sum(video_batch, assignments, num_centers)
+                batch_per_clu_sum = tf.unsorted_segment_sum(video_batch, assignments, num_centers,
+                                                            name='batch_per_clu_sum')
 
             else:
                 normalized_video_batch = tf.nn.l2_normalize(video_batch, -1)
-                cosine_sim = tf.matmul(normalized_video_batch, current_centers, transpose_b=True)
+                cosine_sim = tf.matmul(normalized_video_batch, current_centers, transpose_b=True, name='cosine_sim')
                 nearest_topk_cosine_sim, topk_assignments = tf.nn.top_k(cosine_sim, k=1)
                 nearest_topk_dist = tf.subtract(1.0, nearest_topk_cosine_sim)
                 # Remove the last dimension due to k.
-                nearest_dist = tf.squeeze(nearest_topk_dist, axis=[-1])
-                assignments = tf.squeeze(topk_assignments, axis=[-1])
+                nearest_dist = tf.squeeze(nearest_topk_dist, axis=[-1], name='nearest_dist')
+                assignments = tf.squeeze(topk_assignments, axis=[-1], name='assignment')
 
                 # Compute new centers sum and number of videos that belong to each cluster with this video batch.
-                batch_per_clu_sum = tf.unsorted_segment_sum(normalized_video_batch, assignments, num_centers)
+                batch_per_clu_sum = tf.unsorted_segment_sum(normalized_video_batch, assignments, num_centers,
+                                                            name='batch_per_clu_sum')
 
             batch_per_clu_count = tf.unsorted_segment_sum(tf.ones_like(video_id_batch, dtype=tf.float32),
-                                                          assignments, num_centers)
+                                                          assignments, num_centers,
+                                                          name='batch_per_clu_count')
             # Update total distance, namely objective function.
             if self.return_mean_clu_dist:
-                batch_per_clu_total_dist = tf.unsorted_segment_sum(nearest_dist, assignments, num_centers)
-                update_per_clu_total_dist = tf.assign_add(per_clu_total_dist, batch_per_clu_total_dist)
+                batch_per_clu_total_dist = tf.unsorted_segment_sum(nearest_dist, assignments, num_centers,
+                                                                   name='batch_per_clu_total_dist')
+                update_per_clu_total_dist = tf.assign_add(per_clu_total_dist, batch_per_clu_total_dist,
+                                                          name='update_per_clu_total_dist')
 
-                total_batch_dist = tf.reduce_sum(batch_per_clu_total_dist)
+                total_batch_dist = tf.reduce_sum(batch_per_clu_total_dist, name='total_batch_dist')
             else:
                 update_per_clu_total_dist = tf.no_op()
                 total_batch_dist = tf.reduce_sum(nearest_dist)
 
-            update_total_dist = tf.assign_add(total_dist, total_batch_dist)
-            update_per_clu_sum = tf.assign_add(per_clu_sum, batch_per_clu_sum)
-            update_per_clu_count = tf.assign_add(per_clu_count, batch_per_clu_count)
+            update_total_dist = tf.assign_add(total_dist, total_batch_dist, name='update_total_dist')
+            update_per_clu_sum = tf.assign_add(per_clu_sum, batch_per_clu_sum, name='update_per_clu_sum')
+            update_per_clu_count = tf.assign_add(per_clu_count, batch_per_clu_count, name='update_per_clu_count')
 
             # Avoid unnecessary fetches.
             with tf.control_dependencies(
@@ -157,6 +163,10 @@ class KMeans(object):
             init_op = tf.group(tf.global_variables_initializer(), tf.local_variables_initializer())
 
         graph.finalize()
+
+        writer = tf.summary.FileWriter('/tmp/kmeans', graph=graph)
+        writer.flush()
+        writer.close()
 
         # Update the corresponding attributes of the class.
         self.graph = graph
