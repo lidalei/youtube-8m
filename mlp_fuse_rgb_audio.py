@@ -356,21 +356,43 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                 # Compute validate loss and performance (validate_fn).
                 if validate_set is not None:
                     validate_data, validate_labels = validate_set
-                    if validate_fn is not None:
-                        # Feed validate set. Normalization is not recommended.
-                        validate_loss_val, validate_pred_prob_val = sess.run(
-                            [loss, pred_prob], feed_dict={raw_features_batch: validate_data,
-                                                          labels_batch: validate_labels, phase_train_pl: False})
-                        validate_per = validate_fn(predictions=validate_pred_prob_val, labels=validate_labels)
-                        sv.summary_writer.add_summary(
-                            MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
-                            global_step_val)
-                        logging.info('Step {}, validate {}: {}.\n'.format(global_step_val,
-                                                                          validate_fn.func_name, validate_per))
-                    else:
-                        validate_loss_val = sess.run(loss, feed_dict={raw_features_batch: validate_data,
-                                                                      labels_batch: validate_labels,
-                                                                      phase_train_pl: False})
+
+                    # Compute validation loss.
+                    num_validate_videos = validate_data.shape[0]
+                    split_indices = np.linspace(0, num_validate_videos, num_validate_videos / batch_size,
+                                                dtype=np.int32)
+
+                    validate_loss_vals, validate_pers = [], []
+                    for i in xrange(len(split_indices) - 1):
+                        start_ind = split_indices[i]
+                        end_ind = split_indices[i + 1]
+
+                        if validate_fn is not None:
+                            ith_validate_loss_val, ith_predictions = sess.run(
+                                [loss, pred_prob], feed_dict={
+                                    raw_features_batch: validate_data[start_ind:end_ind],
+                                    labels_batch: validate_labels[start_ind:end_ind]})
+
+                            ith_validate_per = validate_fn(predictions=ith_predictions,
+                                                           labels=validate_labels[start_ind:end_ind])
+                            validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
+                            validate_pers.append(ith_validate_per * (end_ind - start_ind))
+
+                            sv.summary_writer.add_summary(
+                                MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
+                                global_step_val)
+                            logging.info('Step {}, validate {}: {}.'.format(global_step_val,
+                                                                            validate_fn.func_name, validate_per))
+                        else:
+                            ith_validate_loss_val = sess.run(loss, feed_dict={
+                                raw_features_batch: validate_data[start_ind:end_ind],
+                                labels_batch: validate_labels[start_ind:end_ind],
+                                phase_train_pl: False})
+
+                            validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
+
+                    validate_loss_val = sum(validate_loss_vals) / num_validate_videos
+
                     # Add validate summary.
                     sv.summary_writer.add_summary(
                         MakeSummary('validate/xentropy', validate_loss_val), global_step_val)

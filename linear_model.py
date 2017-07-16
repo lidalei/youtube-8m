@@ -657,7 +657,7 @@ class LogisticRegression(object):
                                 validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
 
                         validate_loss_val = sum(validate_loss_vals) / num_validate_videos
-                        
+
                         # Add validate summary.
                         sv.summary_writer.add_summary(
                             MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
