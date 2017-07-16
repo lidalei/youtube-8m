@@ -40,6 +40,7 @@ class LinearClassifier(object):
 
         reader = data_pipeline.reader
         num_classes = reader.num_classes
+        batch_size = reader.batch_size
         feature_names = reader.feature_names
         feature_sizes = reader.feature_sizes
         feature_size = sum(feature_sizes)
@@ -161,22 +162,18 @@ class LinearClassifier(object):
                 weights = weights_biases[:-1]
                 biases = weights_biases[-1]
 
-            with tf.name_scope('validate_loss'), tf.device('/cpu:0'):
-                validate_x_initializer = tf.placeholder(tf.float32, shape=validate_data.shape)
-                validate_x = tf.Variable(initial_value=validate_x_initializer, trainable=False, collections=[],
-                                         name='validate_data')
+            with tf.name_scope('validate_loss'):
+                validate_x_pl = tf.placeholder(tf.float32, shape=[None, feature_size], name='validate_data')
 
-                validate_y_initializer = tf.placeholder(tf.float32, shape=validate_labels.shape)
-                validate_y = tf.Variable(initial_value=validate_y_initializer, trainable=False, collections=[],
-                                         name='validate_labels')
+                validate_y_pl = tf.placeholder(tf.float32, shape=[None, num_classes], name='validate_labels')
 
                 if tr_data_fn is None:
-                    validate_x_transformed = tf.identity(validate_x)
+                    validate_x_transformed = tf.identity(validate_x_pl)
                 else:
-                    validate_x_transformed = tr_data_fn(validate_x, **tr_data_paras)
+                    validate_x_transformed = tr_data_fn(validate_x_pl, **tr_data_paras)
 
                 predictions = tf.matmul(validate_x_transformed, weights) + biases
-                loss = tf.sqrt(tf.reduce_mean(tf.squared_difference(predictions, validate_y)), name='rmse')
+                loss = tf.sqrt(tf.reduce_mean(tf.squared_difference(predictions, validate_y_pl)), name='rmse')
                 # pred_labels = tf.greater_equal(predictions, 0.0, name='pred_labels')
 
             summary_op = tf.summary.merge_all()
@@ -211,12 +208,6 @@ class LinearClassifier(object):
         # Wait for threads to finish.
         coord.join(threads)
 
-        # Initialize validate data and labels in the graph.
-        sess.run([validate_x.initializer, validate_y.initializer], feed_dict={
-            validate_x_initializer: validate_data,
-            validate_y_initializer: validate_labels
-        })
-
         if line_search:
             # Do true search.
             best_weights_val, best_biases_val = None, None
@@ -224,12 +215,29 @@ class LinearClassifier(object):
             min_loss = np.PINF
 
             for l2_reg in l2_regs:
-                weights_val, biases_val, loss_val = sess.run(
-                    [weights, biases, loss], feed_dict={l2_reg_ph: l2_reg})
-                logging.info('l2_reg {} leads to rmse loss {}.'.format(l2_reg, loss_val))
-                if loss_val < min_loss:
+                # Compute regularized weights.
+                weights_val, biases_val = sess.run([weights, biases], feed_dict={l2_reg_ph: l2_reg})
+                # Compute validation loss.
+                num_validate_videos = validate_data.shape[0]
+                split_indices = np.linspace(0, num_validate_videos, num_validate_videos / batch_size,
+                                            dtype=np.int32)
+                loss_vals = []
+                for i in xrange(len(split_indices) - 1):
+                    start_ind = split_indices[i]
+                    end_ind = split_indices[i + 1]
+
+                    ith_loss_val = sess.run(loss,
+                                            feed_dict={validate_x_pl: validate_data[start_ind:end_ind],
+                                                       validate_y_pl: validate_labels[start_ind:end_ind]})
+
+                    loss_vals.append(ith_loss_val * (end_ind - start_ind))
+
+                validate_loss_val = sum(loss_vals) / num_validate_videos
+
+                logging.info('l2_reg {} leads to rmse loss {}.'.format(l2_reg, validate_loss_val))
+                if validate_loss_val < min_loss:
                     best_weights_val, best_biases_val = weights_val, biases_val
-                    min_loss = loss_val
+                    min_loss = validate_loss_val
                     best_l2_reg = l2_reg
 
         else:
@@ -613,21 +621,43 @@ class LogisticRegression(object):
                     # Compute validate loss and performance (validate_fn).
                     if validate_set is not None:
                         validate_data, validate_labels = validate_set
-                        if validate_fn is not None:
-                            # Feed validate set. Normalization is not recommended.
-                            validate_loss_val, validate_pred_prob_val = sess.run(
-                                [self.loss, self.pred_prob], feed_dict={self.raw_features_batch: validate_data,
-                                                                        self.labels_batch: validate_labels})
-                            validate_per = validate_fn(predictions=validate_pred_prob_val, labels=validate_labels)
-                            sv.summary_writer.add_summary(
-                                MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
-                                global_step_val)
-                            logging.info('Step {}, validate {}: {}.'.format(global_step_val,
-                                                                            validate_fn.func_name, validate_per))
-                        else:
-                            validate_loss_val = sess.run(self.loss,
-                                                         feed_dict={self.raw_features_batch: validate_data,
-                                                                    self.labels_batch: validate_labels})
+
+                        # Compute validation loss.
+                        num_validate_videos = validate_data.shape[0]
+                        split_indices = np.linspace(0, num_validate_videos, num_validate_videos / batch_size,
+                                                    dtype=np.int32)
+
+                        validate_loss_vals, validate_pers = [], []
+                        for i in xrange(len(split_indices) - 1):
+                            start_ind = split_indices[i]
+                            end_ind = split_indices[i + 1]
+
+                            if validate_fn is not None:
+                                ith_validate_loss_val, ith_predictions = sess.run(
+                                    [self.loss, self.pred_prob], feed_dict={
+                                        self.raw_features_batch: validate_data[start_ind:end_ind],
+                                        self.labels_batch: validate_labels[start_ind:end_ind]})
+
+                                ith_validate_per = validate_fn(predictions=ith_predictions,
+                                                               labels=validate_labels[start_ind:end_ind])
+                                validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
+                                validate_pers.append(ith_validate_per * (end_ind - start_ind))
+
+                                sv.summary_writer.add_summary(
+                                    MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
+                                    global_step_val)
+                                logging.info('Step {}, validate {}: {}.'.format(global_step_val,
+                                                                                validate_fn.func_name, validate_per))
+                            else:
+                                ith_validate_loss_val = sess.run(
+                                    self.loss, feed_dict={
+                                        self.raw_features_batch: validate_data[start_ind:end_ind],
+                                        self.labels_batch: validate_labels[start_ind:end_ind]})
+
+                                validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
+
+                        validate_loss_val = sum(validate_loss_vals) / num_validate_videos
+                        
                         # Add validate summary.
                         sv.summary_writer.add_summary(
                             MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
