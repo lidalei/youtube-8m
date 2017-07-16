@@ -350,8 +350,8 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
 
         validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
                                               batch_size=batch_size, num_readers=num_readers)
-        validate_ids, validate_data, validate_labels, _ = random_sample(0.05, mask=(True, True, True, False),
-                                                                        data_pipeline=validate_data_pipeline)
+        _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
+                                                             data_pipeline=validate_data_pipeline)
         best_k = None
         best_validate_gap = np.NINF
         for k in k_list:
@@ -363,7 +363,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
             for i in xrange(len(split_indices) - 1):
                 start_ind = split_indices[i]
                 end_ind = split_indices[i + 1]
-                ith_predictions = pred_obj.make_batch_predictions(validate_ids[start_ind:end_ind],
+                ith_predictions = pred_obj.make_batch_predictions(None,
                                                                   validate_data[start_ind:end_ind])
                 ith_validate_gap = calculate_gap(ith_predictions, validate_labels[start_ind:end_ind])
 
