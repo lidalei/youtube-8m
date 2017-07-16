@@ -643,6 +643,7 @@ class LogisticRegression(object):
                                 validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
                                 validate_pers.append(ith_validate_per * (end_ind - start_ind))
 
+                                validate_per = sum(validate_pers) / num_validate_videos
                                 sv.summary_writer.add_summary(
                                     MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
                                     global_step_val)
