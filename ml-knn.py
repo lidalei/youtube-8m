@@ -350,32 +350,26 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
 
         validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
                                               batch_size=batch_size, num_readers=num_readers)
-        validate_ids, validate_data, validate_labels, _ = random_sample(0.1, mask=(True, True, True, False),
+        validate_ids, validate_data, validate_labels, _ = random_sample(0.05, mask=(True, True, True, False),
                                                                         data_pipeline=validate_data_pipeline)
         best_k = None
         best_validate_gap = np.NINF
         for k in k_list:
             pred_obj = Predict(train_data_pipeline, model_dir, k=k)
             num_validate_videos = validate_data.shape[0]
-            if num_validate_videos >= 51200:
-                one_third = num_validate_videos / 3
-                two_third = num_validate_videos * 2 / 3
-                predictions_1 = pred_obj.make_batch_predictions(validate_ids[:one_third],
-                                                                validate_data[:one_third])
-                validate_gap_1 = calculate_gap(predictions_1, validate_labels[:one_third])
+            split_indices = np.linspace(0, num_validate_videos, num_validate_videos / batch_size, dtype=np.int32)
 
-                predictions_2 = pred_obj.make_batch_predictions(validate_ids[one_third:two_third],
-                                                                validate_data[one_third:two_third])
-                validate_gap_2 = calculate_gap(predictions_2, validate_labels[one_third:two_third])
+            validate_gaps = []
+            for i in xrange(len(split_indices) - 1):
+                start_ind = split_indices[i]
+                end_ind = split_indices[i + 1]
+                ith_predictions = pred_obj.make_batch_predictions(validate_ids[start_ind:end_ind],
+                                                                  validate_data[start_ind:end_ind])
+                ith_validate_gap = calculate_gap(ith_predictions, validate_labels[start_ind:end_ind])
 
-                predictions_3 = pred_obj.make_batch_predictions(validate_ids[two_third:],
-                                                                validate_data[two_third:])
-                validate_gap_3 = calculate_gap(predictions_3, validate_labels[two_third:])
+                validate_gaps.append(ith_validate_gap * (end_ind - start_ind))
 
-                validate_gap = (validate_gap_1 + validate_gap_2 + validate_gap_3) / 3.0
-            else:
-                predictions = pred_obj.make_batch_predictions(validate_ids, validate_data)
-                validate_gap = calculate_gap(predictions, validate_labels)
+            validate_gap = sum(validate_gaps) / num_validate_videos
 
             logging.info('k: {}, validate gap: {}'.format(k, validate_gap))
             if validate_gap > best_validate_gap:
