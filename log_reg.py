@@ -120,12 +120,19 @@ def main(unused_argv):
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
                                        batch_size=batch_size, num_readers=num_readers)
     if start_new_model:
+        # Load train data mean and std.
+        train_features_mean, train_features_var = load_features_mean_var(reader)
+
+        tr_data_fn = standard_scale
+        tr_data_paras = {'mean': train_features_mean, 'variance': train_features_var,
+                         'reshape': False, 'size': None}
+
         if init_with_linear_clf:
             # ...Start linear classifier...
             # Compute weights and biases of linear classifier using normal equation.
             # Linear search helps little.
             linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))
-            linear_clf.fit(data_pipeline=train_data_pipeline,
+            linear_clf.fit(data_pipeline=train_data_pipeline, tr_data_fn=tr_data_fn, tr_data_paras=tr_data_paras,
                            l2_regs=[0.000001, 0.00001, 0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0],
                            validate_set=(validate_data, validate_labels), line_search=True)
             linear_clf_weights, linear_clf_biases = linear_clf.weights, linear_clf.biases
@@ -137,13 +144,6 @@ def main(unused_argv):
             # ...Exit linear classifier...
         else:
             linear_clf_weights, linear_clf_biases = None, None
-
-        # Load train data mean and std.
-        train_features_mean, train_features_var = load_features_mean_var(reader)
-
-        tr_data_fn = standard_scale
-        tr_data_paras = {'mean': train_features_mean, 'variance': train_features_var,
-                         'reshape': False, 'size': None}
     else:
         linear_clf_weights, linear_clf_biases = None, None
         tr_data_fn = None
