@@ -226,9 +226,11 @@ class LinearClassifier(object):
                     start_ind = split_indices[i]
                     end_ind = split_indices[i + 1]
 
-                    ith_loss_val = sess.run(loss,
-                                            feed_dict={validate_x_pl: validate_data[start_ind:end_ind],
-                                                       validate_y_pl: validate_labels[start_ind:end_ind]})
+                    # Avoid re-computing weights and biases (Otherwise, l2_reg_ph is necessary).
+                    ith_loss_val = sess.run(loss, feed_dict={validate_x_pl: validate_data[start_ind:end_ind],
+                                                             validate_y_pl: validate_labels[start_ind:end_ind],
+                                                             weights: weights_val,
+                                                             biases: biases_val})
 
                     loss_vals.append(ith_loss_val * (end_ind - start_ind))
 
