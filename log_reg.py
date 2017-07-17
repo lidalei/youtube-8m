@@ -85,19 +85,19 @@ def main(unused_argv):
                                           batch_size=batch_size, num_readers=num_readers)
 
     if tf.gfile.Exists(path_join(output_dir, 'validate_data.pickle')):
-        with open(path_join(output_dir, 'validate_data.pickle', 'rb')) as f:
+        with open(path_join(output_dir, 'validate_data.pickle'), 'rb') as f:
             validate_data = pickle.load(f)
 
-        with open(path_join(output_dir, 'validate_labels.pickle', 'rb')) as f:
+        with open(path_join(output_dir, 'validate_labels.pickle'), 'rb') as f:
             validate_labels = pickle.load(f)
     else:
         # Sample validate set for line search in linear classifier or logistic regression early stopping.
         _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
                                                              data_pipeline=validate_data_pipeline)
-        with open(path_join(output_dir, 'validate_data.pickle', 'wb')) as f:
+        with open(path_join(output_dir, 'validate_data.pickle'), 'wb') as f:
             pickle.dump(validate_data, f)
 
-        with open(path_join(output_dir, 'validate_labels.pickle', 'wb')) as f:
+        with open(path_join(output_dir, 'validate_labels.pickle'), 'wb') as f:
             pickle.dump(validate_labels, f)
 
     start_new_model = start_new_model or (not tf.gfile.Exists(output_dir))
