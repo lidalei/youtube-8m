@@ -624,7 +624,7 @@ class LogisticRegression(object):
 
                         # Compute validation loss.
                         num_validate_videos = validate_data.shape[0]
-                        split_indices = np.linspace(0, num_validate_videos, num_validate_videos / batch_size,
+                        split_indices = np.linspace(0, num_validate_videos, num_validate_videos / (4 * batch_size),
                                                     dtype=np.int32)
 
                         validate_loss_vals, validate_pers = [], []
@@ -642,13 +642,6 @@ class LogisticRegression(object):
                                                                labels=validate_labels[start_ind:end_ind])
                                 validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
                                 validate_pers.append(ith_validate_per * (end_ind - start_ind))
-
-                                validate_per = sum(validate_pers) / num_validate_videos
-                                sv.summary_writer.add_summary(
-                                    MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
-                                    global_step_val)
-                                logging.info('Step {}, validate {}: {}.'.format(global_step_val,
-                                                                                validate_fn.func_name, validate_per))
                             else:
                                 ith_validate_loss_val = sess.run(
                                     self.loss, feed_dict={
@@ -658,10 +651,17 @@ class LogisticRegression(object):
                                 validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
 
                         validate_loss_val = sum(validate_loss_vals) / num_validate_videos
-
                         # Add validate summary.
                         sv.summary_writer.add_summary(
                             MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
+
+                        if validate_fn is not None:
+                            validate_per = sum(validate_pers) / num_validate_videos
+                            sv.summary_writer.add_summary(
+                                MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
+                                global_step_val)
+                            logging.info('Step {}, validate {}: {}.'.format(global_step_val,
+                                                                            validate_fn.func_name, validate_per))
 
                 elif step % 200 == 0:
                     _, summary, global_step_val = sess.run(
