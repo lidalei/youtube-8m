@@ -38,9 +38,9 @@ class LinearClassifier(object):
         """
         logging.info('Entering linear classifier ...')
 
+        batch_size = data_pipeline.batch_size
         reader = data_pipeline.reader
         num_classes = reader.num_classes
-        batch_size = reader.batch_size
         feature_names = reader.feature_names
         feature_sizes = reader.feature_sizes
         feature_size = sum(feature_sizes)

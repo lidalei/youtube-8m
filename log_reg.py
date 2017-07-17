@@ -113,6 +113,7 @@ def main(unused_argv):
         logging.error('Cannot load train sum_labels. Use default value.')
         pos_weights = None
     finally:
+        logging.error('Disable pos_weights.')
         # Set it as None to disable pos_weights.
         pos_weights = None
 
