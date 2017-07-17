@@ -27,6 +27,7 @@ from readers import get_reader
 from utils import DataPipeline, random_sample, gap_fn, load_sum_labels, compute_data_mean_var
 
 from os.path import join as path_join
+import pickle
 import numpy as np
 import scipy.spatial.distance as sci_distance
 
@@ -307,9 +308,22 @@ def main(unused_argv):
     validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
                                           batch_size=batch_size, num_readers=num_readers)
 
-    _, validate_data, validate_labels, _ = random_sample(0.005, mask=(False, True, True, False),
-                                                         data_pipeline=validate_data_pipeline,
-                                                         name_scope='sample_validate')
+    if tf.gfile.Exists(path_join(output_dir, 'validate_data.pickle')):
+        with open(path_join(output_dir, 'validate_data.pickle'), 'rb') as f:
+            validate_data = pickle.load(f)
+
+        with open(path_join(output_dir, 'validate_labels.pickle'), 'rb') as f:
+            validate_labels = pickle.load(f)
+    else:
+        # Sample validate set.
+        _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
+                                                             data_pipeline=validate_data_pipeline,
+                                                             name_scope='sample_validate')
+        with open(path_join(output_dir, 'validate_data.pickle'), 'wb') as f:
+            pickle.dump(validate_data, f)
+
+        with open(path_join(output_dir, 'validate_labels.pickle'), 'wb') as f:
+            pickle.dump(validate_labels, f)
 
     # DataPipeline consists of reader, batch size, no. of readers and data pattern.
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
