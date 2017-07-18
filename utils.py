@@ -208,13 +208,13 @@ def load_features_mean_var(reader):
     feature_names = reader.feature_names
 
     folder = dirname(abspath(getsourcefile(lambda: 0)))
-    with open(path_join(folder, 'constants/all_data_features_mean.pickle'), 'rb') as f:
+    with open(path_join(folder, 'constants/train_data_features_mean.pickle'), 'rb') as f:
         # {'mean_rgb': features_mean[:1024], 'mean_audio': features_mean[1024:]}
         features_mean = pickle.load(f)
         mean_tuple = [features_mean[feature] for feature in feature_names]
         mean = np.concatenate(mean_tuple, axis=0)
 
-    with open(path_join(folder, 'constants/all_data_features_var.pickle'), 'rb') as f:
+    with open(path_join(folder, 'constants/train_data_features_var.pickle'), 'rb') as f:
         # {'mean_rgb': features_var[:1024], 'mean_audio': features_var[1024:]}
         features_var = pickle.load(f)
         var_tuple = [features_var[feature] for feature in feature_names]
