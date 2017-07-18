@@ -43,7 +43,8 @@ class LinearClassifier(object):
         num_classes = reader.num_classes
         feature_names = reader.feature_names
         feature_sizes = reader.feature_sizes
-        feature_size = sum(feature_sizes)
+        raw_feature_size = sum(feature_sizes)
+        feature_size = raw_feature_size
         logging.info('Linear regression uses {} features with dims {}.'.format(feature_names, feature_sizes))
 
         if line_search:
@@ -67,7 +68,7 @@ class LinearClassifier(object):
             logging.info('No line search, l2_regs is {}.'.format(l2_regs))
             if validate_set is None:
                 # Important! To make the graph construction successful.
-                validate_data = np.zeros([1, feature_size], dtype=np.float32)
+                validate_data = np.zeros([1, raw_feature_size], dtype=np.float32)
                 validate_labels = np.zeros([1, num_classes], dtype=np.float32)
             else:
                 validate_data, validate_labels = validate_set
@@ -75,7 +76,7 @@ class LinearClassifier(object):
         # Check validate data and labels shape.
         logging.info('validate set: data has shape {}, labels has shape {}.'.format(
             validate_data.shape, validate_labels.shape))
-        if (validate_data.shape[-1] != feature_size) or (validate_labels.shape[-1] != num_classes):
+        if (validate_data.shape[-1] != raw_feature_size) or (validate_labels.shape[-1] != num_classes):
             raise ValueError('validate set shape does not conforms with training set.')
 
         # TO BE CAUTIOUS! THE FOLLOWING MAY HAVE TO DEAL WITH FEATURE SIZE CHANGE.
@@ -163,7 +164,7 @@ class LinearClassifier(object):
                 biases = weights_biases[-1]
 
             with tf.name_scope('validate_loss'):
-                validate_x_pl = tf.placeholder(tf.float32, shape=[None, feature_size], name='validate_data')
+                validate_x_pl = tf.placeholder(tf.float32, shape=[None, raw_feature_size], name='validate_data')
 
                 validate_y_pl = tf.placeholder(tf.float32, shape=[None, num_classes], name='validate_labels')
 
@@ -626,7 +627,7 @@ class LogisticRegression(object):
 
                         # Compute validation loss.
                         num_validate_videos = validate_data.shape[0]
-                        split_indices = np.linspace(0, num_validate_videos, num_validate_videos / (4 * batch_size),
+                        split_indices = np.linspace(0, num_validate_videos, num_validate_videos / (2 * batch_size),
                                                     dtype=np.int32)
 
                         validate_loss_vals, validate_pers = [], []
