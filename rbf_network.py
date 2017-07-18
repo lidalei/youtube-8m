@@ -353,14 +353,14 @@ def main(unused_argv):
         tr_data_fn = rbf_transform
         tr_data_paras = {'centers': centers, 'sigmas': sigmas, 'metric': dist_metric,
                          'reshape': True, 'size': num_centers}
-
+        """
         # Include standard scale to rbf transform.
         tr_data_mean, tr_data_var = compute_data_mean_var(train_data_pipeline,
                                                           tr_data_fn=tr_data_fn,
                                                           tr_data_paras=tr_data_paras)
         logging.debug('tr_data_mean: {}\ntr_data_var: {}'.format(tr_data_mean, tr_data_var))
         tr_data_paras.update({'mean': tr_data_mean, 'variance': tr_data_var})
-
+        """
         if init_with_linear_clf:
             # Call linear classification to get a good initial values of weights and biases.
             linear_clf = LinearClassifier(logdir=path_join(output_dir, 'linear_classifier'))

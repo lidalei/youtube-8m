@@ -382,13 +382,13 @@ class LogisticRegression(object):
             reg_losses = []
             # tf.GraphKeys.REGULARIZATION_LOSSES contains all variables to regularize.
             to_regularize = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
-            if self.l1_reg_rate:
+            if self.l1_reg_rate and self.l1_reg_rate != 0:
                 l1_reg_losses = [tf.reduce_sum(tf.abs(w)) for w in to_regularize]
                 l1_reg_loss = tf.add_n(l1_reg_losses, name='l1_reg_loss')
                 tf.summary.scalar('loss/l1_reg_loss', l1_reg_loss)
                 reg_losses.append(tf.multiply(self.l1_reg_rate, l1_reg_loss))
 
-            if self.l2_reg_rate:
+            if self.l2_reg_rate and self.l2_reg_rate != 0:
                 l2_reg_losses = [tf.reduce_sum(tf.square(w)) for w in to_regularize]
                 l2_reg_loss = tf.add_n(l2_reg_losses, name='l2_loss')
                 tf.summary.scalar('loss/l2_reg_loss', l2_reg_loss)
