@@ -171,6 +171,7 @@ class LinearClassifier(object):
                 if tr_data_fn is None:
                     validate_x_transformed = tf.identity(validate_x_pl)
                 else:
+                    tr_data_paras.update({'reuse': True})
                     validate_x_transformed = tr_data_fn(validate_x_pl, **tr_data_paras)
 
                 predictions = tf.matmul(validate_x_transformed, weights) + biases
