@@ -362,7 +362,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                     split_indices = np.linspace(0, num_validate_videos, num_validate_videos / (4 * batch_size),
                                                 dtype=np.int32)
 
-                    validate_loss_vals, validate_pers = [], []
+                    validate_loss_vals, predictions = [], []
                     for i in xrange(len(split_indices) - 1):
                         start_ind = split_indices[i]
                         end_ind = split_indices[i + 1]
@@ -373,10 +373,8 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                                     raw_features_batch: validate_data[start_ind:end_ind],
                                     labels_batch: validate_labels[start_ind:end_ind]})
 
-                            ith_validate_per = validate_fn(predictions=ith_predictions,
-                                                           labels=validate_labels[start_ind:end_ind])
                             validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
-                            validate_pers.append(ith_validate_per * (end_ind - start_ind))
+                            predictions.append(ith_predictions)
                         else:
                             ith_validate_loss_val = sess.run(loss, feed_dict={
                                 raw_features_batch: validate_data[start_ind:end_ind],
@@ -391,7 +389,8 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                         MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
 
                     if validate_fn is not None:
-                        validate_per = sum(validate_pers) / num_validate_videos
+                        validate_per = validate_fn(predictions=np.concatenate(predictions, axis=0),
+                                                   labels=validate_labels)
                         sv.summary_writer.add_summary(
                             MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
                             global_step_val)

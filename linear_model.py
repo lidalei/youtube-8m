@@ -598,13 +598,9 @@ class LogisticRegression(object):
                     break
 
                 if step % 500 == 0:
-                    run_options = tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE)
-                    run_metadata = tf.RunMetadata()
-
                     if validate_fn is not None:
                         _, summary, train_pred_prob_batch, train_labels_batch, global_step_val = sess.run(
-                            [self.train_op, self.summary_op, self.pred_prob, self.labels_batch, self.global_step],
-                            options=run_options, run_metadata=run_metadata)
+                            [self.train_op, self.summary_op, self.pred_prob, self.labels_batch, self.global_step])
 
                         # Evaluate on train data.
                         train_per = validate_fn(predictions=train_pred_prob_batch, labels=train_labels_batch)
@@ -615,12 +611,10 @@ class LogisticRegression(object):
                                                                      validate_fn.func_name, train_per))
                     else:
                         _, summary, global_step_val = sess.run(
-                            [self.train_op, self.summary_op, self.global_step],
-                            options=run_options, run_metadata=run_metadata)
+                            [self.train_op, self.summary_op, self.global_step])
 
                     # Add train summary.
                     sv.summary_computed(sess, summary, global_step=global_step_val)
-                    sv.summary_writer.add_run_metadata(run_metadata, 'step{}'.format(global_step_val))
 
                     # Compute validate loss and performance (validate_fn).
                     if validate_set is not None:
@@ -631,7 +625,7 @@ class LogisticRegression(object):
                         split_indices = np.linspace(0, num_validate_videos, num_validate_videos / (2 * batch_size),
                                                     dtype=np.int32)
 
-                        validate_loss_vals, validate_pers = [], []
+                        validate_loss_vals, predictions = [], []
                         for i in xrange(len(split_indices) - 1):
                             start_ind = split_indices[i]
                             end_ind = split_indices[i + 1]
@@ -642,10 +636,8 @@ class LogisticRegression(object):
                                         self.raw_features_batch: validate_data[start_ind:end_ind],
                                         self.labels_batch: validate_labels[start_ind:end_ind]})
 
-                                ith_validate_per = validate_fn(predictions=ith_predictions,
-                                                               labels=validate_labels[start_ind:end_ind])
                                 validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
-                                validate_pers.append(ith_validate_per * (end_ind - start_ind))
+                                predictions.append(ith_predictions)
                             else:
                                 ith_validate_loss_val = sess.run(
                                     self.loss, feed_dict={
@@ -660,7 +652,9 @@ class LogisticRegression(object):
                             MakeSummary('validate/xentropy', validate_loss_val), global_step_val)
 
                         if validate_fn is not None:
-                            validate_per = sum(validate_pers) / num_validate_videos
+                            validate_per = validate_fn(predictions=np.concatenate(predictions, axis=0),
+                                                       labels=validate_labels)
+
                             sv.summary_writer.add_summary(
                                 MakeSummary('validate/{}'.format(validate_fn.func_name), validate_per),
                                 global_step_val)
