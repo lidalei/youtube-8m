@@ -189,15 +189,13 @@ def main(unused_argv):
 if __name__ == '__main__':
     flags.DEFINE_string('model_type', 'video', 'video or frame level model')
 
-    flags.DEFINE_string('yt8m_home', '/Users/Sophie/Documents/youtube-8m-data',
-                        'YT8M dataset home.')
     # Set as '' to be passed in python running command.
     flags.DEFINE_string('train_data_pattern',
-                        path_join(FLAGS.yt8m_home, 'train_validate/train*.tfrecord'),
+                        '/Users/Sophie/Documents/youtube-8m-data/train_validate/train*.tfrecord',
                         'File glob for the training data set.')
 
     flags.DEFINE_string('validate_data_pattern',
-                        path_join(FLAGS.yt8m_home, 'train_validate/validate*.tfrecord'),
+                        '/Users/Sophie/Documents/youtube-8m-data/train_validate/validate*.tfrecord',
                         'Validate data pattern, to be specified when doing hyper-parameter tuning.')
 
     # mean_rgb,mean_audio

@@ -168,11 +168,8 @@ def main(unsed_argv):
 if __name__ == '__main__':
     flags.DEFINE_string('model_type', 'video', 'video or frame level model')
 
-    flags.DEFINE_string('yt8m_home', '/Users/Sophie/Documents/youtube-8m-data',
-                        'YT8M dataset home.')
-
     flags.DEFINE_string('test_data_pattern',
-                        path_join(FLAGS.yt8m_home, 'test/test*.tfrecord'),
+                        '/Users/Sophie/Documents/youtube-8m-data/test/test*.tfrecord',
                         'Test data pattern, to be specified when making predictions.')
 
     flags.DEFINE_string('feature_names', 'mean_rgb,mean_audio', 'Features to be used, separated by ,.')
