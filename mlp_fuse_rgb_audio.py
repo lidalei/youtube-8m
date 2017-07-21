@@ -368,7 +368,8 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                             ith_validate_loss_val, ith_predictions = sess.run(
                                 [loss, pred_prob], feed_dict={
                                     raw_features_batch: validate_data[start_ind:end_ind],
-                                    labels_batch: validate_labels[start_ind:end_ind]})
+                                    labels_batch: validate_labels[start_ind:end_ind],
+                                    phase_train_pl: False})
 
                             validate_loss_vals.append(ith_validate_loss_val * (end_ind - start_ind))
                             predictions.append(ith_predictions)
