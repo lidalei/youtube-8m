@@ -18,6 +18,8 @@ from utils import DataPipeline, random_sample, load_features_mean_var, load_sum_
 from utils import MakeSummary, get_input_data_tensors
 from tensorflow import flags, logging, app
 from utils import gap_fn
+import pickle
+from os.path import join as path_join
 
 FLAGS = flags.FLAGS
 NUM_TRAIN_EXAMPLES = 4906660
@@ -405,7 +407,7 @@ def main(unused_argv):
     logging.set_verbosity(logging.INFO)
 
     start_new_model = FLAGS.start_new_model
-    logdir = FLAGS.logdir
+    output_dir = FLAGS.output_dir
 
     init_learning_rate = FLAGS.init_learning_rate
     decay_steps = FLAGS.decay_steps
@@ -422,26 +424,40 @@ def main(unused_argv):
     batch_size = FLAGS.batch_size
     num_readers = FLAGS.num_readers
 
-    # Increase num_readers.
-    validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
-                                          batch_size=batch_size, num_readers=num_readers)
+    if tf.gfile.Exists(path_join(output_dir, 'validate_data.pickle')):
+        with open(path_join(output_dir, 'validate_data.pickle'), 'rb') as f:
+            validate_data = pickle.load(f)
 
-    # Sample validate set for line search in linear classifier or logistic regression early stopping.
-    _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
-                                                         data_pipeline=validate_data_pipeline)
+        with open(path_join(output_dir, 'validate_labels.pickle'), 'rb') as f:
+            validate_labels = pickle.load(f)
+    else:
+        # Increase num_readers.
+        validate_data_pipeline = DataPipeline(reader=reader, data_pattern=validate_data_pattern,
+                                              batch_size=batch_size, num_readers=num_readers)
+
+        # Sample validate set.
+        _, validate_data, validate_labels, _ = random_sample(0.05, mask=(False, True, True, False),
+                                                             data_pipeline=validate_data_pipeline,
+                                                             name_scope='sample_validate')
+        with open(path_join(output_dir, 'validate_data.pickle'), 'wb') as f:
+            pickle.dump(validate_data, f)
+
+        with open(path_join(output_dir, 'validate_labels.pickle'), 'wb') as f:
+            pickle.dump(validate_labels, f)
 
     train_data_pipeline = DataPipeline(reader=reader, data_pattern=train_data_pattern,
                                        batch_size=batch_size, num_readers=num_readers)
 
-    if start_new_model and tf.gfile.Exists(logdir):
+    model_save_path = path_join(output_dir, 'mlp_fuse')
+    if start_new_model and tf.gfile.Exists(model_save_path):
         logging.info('Starting a new model...')
         # Start new model, delete existing checkpoints.
         try:
-            tf.gfile.DeleteRecursively(logdir)
+            tf.gfile.DeleteRecursively(model_save_path)
         except tf.errors.OpError:
-            logging.error('Failed to delete dir {}.'.format(logdir))
+            logging.error('Failed to delete dir {}.'.format(model_save_path))
         else:
-            logging.info('Succeeded to delete train dir {}.'.format(logdir))
+            logging.info('Succeeded to delete train dir {}.'.format(model_save_path))
 
     # Set pos_weights for extremely imbalanced situation in one-vs-all classifiers.
     try:
@@ -459,7 +475,7 @@ def main(unused_argv):
 
     train(train_data_pipeline, epochs=train_epochs, pos_weights=pos_weights, l1_reg_rate=l1_reg_rate,
           l2_reg_rate=l2_reg_rate, init_learning_rate=init_learning_rate, bootstrap=is_bootstrap,
-          validate_set=(validate_data, validate_labels), validate_fn=gap_fn, logdir=logdir)
+          validate_set=(validate_data, validate_labels), validate_fn=gap_fn, logdir=model_save_path)
 
 if __name__ == '__main__':
     flags.DEFINE_string('model_type', 'video', 'video or frame level model')
@@ -500,7 +516,7 @@ if __name__ == '__main__':
     flags.DEFINE_integer('train_epochs', 20, 'Training epochs, one epoch means passing all training data once.')
 
     # Added current timestamp.
-    flags.DEFINE_string('logdir', '/tmp/video_level/mlp_fuse',
+    flags.DEFINE_string('output_dir', '/tmp/video_level/mlp_fuse',
                         'The directory where intermediate and model checkpoints should be written.')
 
     app.run()
