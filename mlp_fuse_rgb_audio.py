@@ -1,5 +1,5 @@
 """
-Multi-layer Perceptron (MLP).
+Multi-layer Neural network.
 
 Note:
     1. Normalizing features will lead to much faster convergence but worse performance.
@@ -18,8 +18,6 @@ from utils import DataPipeline, random_sample, load_features_mean_var, load_sum_
 from utils import MakeSummary, get_input_data_tensors
 from tensorflow import flags, logging, app
 from utils import gap_fn
-
-from os.path import join as path_join
 
 FLAGS = flags.FLAGS
 NUM_TRAIN_EXAMPLES = 4906660
@@ -299,9 +297,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
             # optimizer = tf.train.MomentumOptimizer(adap_learning_rate, 0.9, use_nesterov=True)
             # RMSPropOptimizer
             optimizer = tf.train.RMSPropOptimizer(learning_rate=init_learning_rate)
-            # Encapsulate optimizer inside the MovingAverageOptimizer.
-            opt = tf.contrib.opt.MovingAverageOptimizer(optimizer)
-            train_op = opt.minimize(final_loss, global_step=global_step)
+            train_op = optimizer.minimize(final_loss, global_step=global_step)
 
         summary_op = tf.summary.merge_all()
         # summary_op = tf.constant(1.0)
@@ -316,8 +312,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
 
         # To save global variables and savable objects, i.e., var_list is None.
         # Using rbf transform will also save centers and scaling factors.
-        # saver = tf.train.Saver(max_to_keep=50, keep_checkpoint_every_n_hours=0.15)
-        saver = opt.swapping_saver(max_to_keep=50, keep_checkpoint_every_n_hours=0.15)
+        saver = tf.train.Saver(max_to_keep=50, keep_checkpoint_every_n_hours=0.15)
 
     # Start or restore training.
     # To avoid summary causing memory usage peak, manually save summaries.
