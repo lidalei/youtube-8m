@@ -205,6 +205,7 @@ class LinearClassifier(object):
         finally:
             # When done, ask the threads to stop.
             coord.request_stop()
+            summary_writer.close()
 
         # Wait for threads to finish.
         coord.join(threads)
@@ -223,7 +224,7 @@ class LinearClassifier(object):
                 split_indices = np.linspace(0, num_validate_videos, num_validate_videos / batch_size,
                                             dtype=np.int32)
                 loss_vals = []
-                for i in xrange(len(split_indices) - 1):
+                for i in range(len(split_indices) - 1):
                     start_ind = split_indices[i]
                     end_ind = split_indices[i + 1]
 
@@ -590,7 +591,7 @@ class LogisticRegression(object):
 
         with sv.managed_session() as sess:
             logging.info("Entering training loop...")
-            for step in xrange(self.max_train_steps):
+            for step in range(self.max_train_steps):
                 if sv.should_stop():
                     # Save the final model and break.
                     self.saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
@@ -621,11 +622,11 @@ class LogisticRegression(object):
 
                         # Compute validation loss.
                         num_validate_videos = validate_data.shape[0]
-                        split_indices = np.linspace(0, num_validate_videos, num_validate_videos / (2 * batch_size),
-                                                    dtype=np.int32)
+                        split_indices = np.linspace(0, num_validate_videos, max(
+                            num_validate_videos // (2 * batch_size), 2), dtype=np.int32)
 
                         validate_loss_vals, predictions = [], []
-                        for i in xrange(len(split_indices) - 1):
+                        for i in range(len(split_indices) - 1):
                             start_ind = split_indices[i]
                             end_ind = split_indices[i + 1]
 

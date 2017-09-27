@@ -324,7 +324,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
 
     with sv.managed_session() as sess:
         logging.info("Entering training loop...")
-        for step in xrange(1000000):
+        for step in range(1000000):
             if sv.should_stop():
                 # Save the final model and break.
                 saver.save(sess, save_path='{}_{}'.format(sv.save_path, 'final'))
@@ -360,7 +360,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
                                                 dtype=np.int32)
 
                     validate_loss_vals, predictions = [], []
-                    for i in xrange(len(split_indices) - 1):
+                    for i in range(len(split_indices) - 1):
                         start_ind = split_indices[i]
                         end_ind = split_indices[i + 1]
 

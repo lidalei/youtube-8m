@@ -88,7 +88,7 @@ ax_t.set_ylabel('Likelihood')
 ax_t.set_xlim([-1, 32])
 ax_t.set_xticks(ind[::5])
 ax_t.set_xticklabels(['{}'.format(i) for i in ticks[::5]])
-ax_t.legend([p[0] for p in bar_list_t], ['{}'.format(j) for j in xrange(k+2)])
+ax_t.legend([p[0] for p in bar_list_t], ['{}'.format(j) for j in range(k+2)])
 
 # Bottom
 bar_list_b = []
@@ -103,7 +103,7 @@ ax_b.set_ylabel('Likelihood')
 ax_b.set_xlim([-1, 32])
 ax_b.set_xticks(ind[::5])
 ax_b.set_xticklabels(['{}'.format(i) for i in ticks[::5]])
-ax_b.legend([p[0] for p in bar_list_t], ['{}'.format(j) for j in xrange(k+2)])
+ax_b.legend([p[0] for p in bar_list_t], ['{}'.format(j) for j in range(k+2)])
 
 figure.tight_layout()
 plt.show()
@@ -128,7 +128,7 @@ ax_t.set_ylabel('Likelihood')
 ax_t.set_xlim([-1, 50])
 ax_t.set_xticks(ind[::5].tolist() + [ind[-1]])
 ax_t.set_xticklabels(['{}'.format(i) for i in ticks[::5]] + ['Labels'])
-ax_t.legend([p[0] for p in bar_list_t], ['{}'.format(j) for j in xrange(k+2)], ncol=(k+1),
+ax_t.legend([p[0] for p in bar_list_t], ['{}'.format(j) for j in range(k+2)], ncol=(k+1),
             bbox_to_anchor=(0., -0.25, 1., .102), loc=3, mode='expand', borderaxespad=0.)
 
 # Bottom
@@ -144,7 +144,7 @@ ax_b.set_ylabel('Likelihood')
 ax_b.set_xlim([-1, 50])
 ax_b.set_xticks(ind[::5].tolist() + [ind[-1]])
 ax_b.set_xticklabels(['{}'.format(i) for i in ticks[::5]] + ['Labels'])
-# ax_b.legend([p[0] for p in bar_list_t], ['{}'.format(j) for j in xrange(k+2)], ncol=(k+3)/2, bbox_to_anchor=(0., 1.02, 1., .102), loc=3,
+# ax_b.legend([p[0] for p in bar_list_t], ['{}'.format(j) for j in range(k+2)], ncol=(k+3)/2, bbox_to_anchor=(0., 1.02, 1., .102), loc=3,
 #            mode='expand', borderaxespad=0.)
 
 figure.tight_layout()
@@ -181,18 +181,23 @@ width = 0.35       # the width of the bars: can also be len(x) sequence
 
 # Top
 bar_list = []
+yticks = []
 for i, e in enumerate(posterior_prob[:, ticks]):
-    bottom = None if i == 0 else np.sum(posterior_prob[:i, ticks], axis=0)
+    bottom = i# 0 if i == 0 else max(np.sum(posterior_prob[:i, ticks], axis=0))
+    yticks.append(bottom)
     p = ax.bar(left=ind, height=e, width=width, bottom=bottom)
     bar_list.append(p)
 
 ax.set_title('Posterior probability for an instance to be in positive class versus label')
 # ax.set_xlabel('Labels')
 ax.set_ylabel('Probability')
+ax.set_yticks(yticks)
+ax.set_yticklabels(['0'] * len(yticks))
 ax.set_xlim([-1, ind[-1]+1])
 ax.set_xticks(ind[::5].tolist() + [ind[-1]])
 ax.set_xticklabels(['{}'.format(i) for i in ticks[::5]] + ['Labels'])
-ax.legend([p[0] for p in bar_list], ['{}'.format(j) for j in xrange(k+2)], ncol=(k+3)/2, loc=1)
+
+ax.legend([p[0] for p in bar_list], ['{}'.format(j) for j in range(k+2)], ncol=(k+3)/2, loc=1)
 
 figure.tight_layout()
 

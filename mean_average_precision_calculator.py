@@ -25,9 +25,9 @@ to calculate the mean average precision.
 ```
 import random
 
-p = np.array([[random.random() for _ in xrange(50)] for _ in xrange(1000)])
-a = np.array([[random.choice([0, 1]) for _ in xrange(50)]
-     for _ in xrange(1000)])
+p = np.array([[random.random() for _ in range(50)] for _ in range(1000)])
+a = np.array([[random.choice([0, 1]) for _ in range(50)]
+     for _ in range(1000)])
 
 # mean average precision for 50 classes.
 calculator = mean_average_precision_calculator.MeanAveragePrecisionCalculator(

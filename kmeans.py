@@ -265,7 +265,7 @@ class KMeans(object):
         :param tol: Percentage not improved one iteration, stop iteration.
         :return: Update current centers and current objective function value (member variables).
         """
-        for iter_count in xrange(max_iter):
+        for iter_count in range(max_iter):
             start_time = time.time()
             new_centers, new_mean_dist, new_per_clu_mean_dist = self.kmeans_iter()
             print('The {}-th iteration took {} s.'.format(iter_count + 1, time.time() - start_time))

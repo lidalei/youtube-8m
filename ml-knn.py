@@ -360,7 +360,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
             split_indices = np.linspace(0, num_validate_videos, num_validate_videos / batch_size, dtype=np.int32)
 
             validate_gaps = []
-            for i in xrange(len(split_indices) - 1):
+            for i in range(len(split_indices) - 1):
                 start_ind = split_indices[i]
                 end_ind = split_indices[i + 1]
                 ith_predictions = pred_obj.make_batch_predictions(None,
