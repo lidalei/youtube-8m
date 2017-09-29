@@ -356,7 +356,7 @@ def train(train_data_pipeline, epochs=None, pos_weights=None, l1_reg_rate=None, 
 
                     # Compute validation loss.
                     num_validate_videos = validate_data.shape[0]
-                    split_indices = np.linspace(0, num_validate_videos,
+                    split_indices = np.linspace(0, num_validate_videos + 1,
                                                 max(num_validate_videos // (2 * batch_size), 2),
                                                 dtype=np.int32)
 
