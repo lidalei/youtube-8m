@@ -63,7 +63,9 @@ class LinearClassifier(object):
             # Simply fit the training set. Make l2_regs have only one element. And ignore validate_set.
             if l2_regs is None:
                 l2_regs = [0.001]
-            if isinstance(l2_regs, list) or isinstance(l2_regs, tuple):
+            elif isinstance(l2_regs, float):
+                l2_regs = [l2_regs]
+            elif isinstance(l2_regs, list) or isinstance(l2_regs, tuple):
                 l2_regs = l2_regs[:1]
             logging.info('No line search, l2_regs is {}.'.format(l2_regs))
             if validate_set is None:
@@ -244,6 +246,9 @@ class LinearClassifier(object):
                 best_l2_reg = l2_reg
 
         sess.close()
+
+        if (not line_search) and (validate_set is None):
+            min_loss = None
 
         logging.info('The best l2_reg is {} with rmse loss {}.'.format(best_l2_reg, min_loss))
         logging.info('Exiting linear classifier ...')
