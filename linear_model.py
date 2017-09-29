@@ -62,9 +62,9 @@ class LinearClassifier(object):
         else:
             # Simply fit the training set. Make l2_regs have only one element. And ignore validate_set.
             if l2_regs is None:
-                l2_regs = 0.001
+                l2_regs = [0.001]
             if isinstance(l2_regs, list):
-                l2_regs = l2_regs[0]
+                l2_regs = l2_regs[:1]
             logging.info('No line search, l2_regs is {}.'.format(l2_regs))
             if validate_set is None:
                 # Important! To make the graph construction successful.
@@ -210,45 +210,38 @@ class LinearClassifier(object):
         # Wait for threads to finish.
         coord.join(threads)
 
-        if line_search:
-            # Do true search.
-            best_weights_val, best_biases_val = None, None
-            best_l2_reg = 0
-            min_loss = np.PINF
+        # Do line search.
+        best_weights_val, best_biases_val = None, None
+        best_l2_reg = 0
+        min_loss = np.PINF
 
-            for l2_reg in l2_regs:
-                # Compute regularized weights.
-                weights_val, biases_val = sess.run([weights, biases], feed_dict={l2_reg_ph: l2_reg})
-                # Compute validation loss.
-                num_validate_videos = validate_data.shape[0]
-                split_indices = np.linspace(0, num_validate_videos, num_validate_videos / batch_size,
-                                            dtype=np.int32)
-                loss_vals = []
-                for i in range(len(split_indices) - 1):
-                    start_ind = split_indices[i]
-                    end_ind = split_indices[i + 1]
+        for l2_reg in l2_regs:
+            # Compute regularized weights.
+            weights_val, biases_val = sess.run([weights, biases], feed_dict={l2_reg_ph: l2_reg})
+            # Compute validation loss.
+            num_validate_videos = validate_data.shape[0]
+            split_indices = np.linspace(0, num_validate_videos, num_validate_videos / batch_size,
+                                        dtype=np.int32)
+            loss_vals = []
+            for i in range(len(split_indices) - 1):
+                start_ind = split_indices[i]
+                end_ind = split_indices[i + 1]
 
-                    # Avoid re-computing weights and biases (Otherwise, l2_reg_ph is necessary).
-                    ith_loss_val = sess.run(loss, feed_dict={validate_x_pl: validate_data[start_ind:end_ind],
-                                                             validate_y_pl: validate_labels[start_ind:end_ind],
-                                                             weights: weights_val,
-                                                             biases: biases_val})
+                # Avoid re-computing weights and biases (Otherwise, l2_reg_ph is necessary).
+                ith_loss_val = sess.run(loss, feed_dict={validate_x_pl: validate_data[start_ind:end_ind],
+                                                         validate_y_pl: validate_labels[start_ind:end_ind],
+                                                         weights: weights_val,
+                                                         biases: biases_val})
 
-                    loss_vals.append(ith_loss_val * (end_ind - start_ind))
+                loss_vals.append(ith_loss_val * (end_ind - start_ind))
 
-                validate_loss_val = sum(loss_vals) / num_validate_videos
+            validate_loss_val = sum(loss_vals) / num_validate_videos
 
-                logging.info('l2_reg {} leads to rmse loss {}.'.format(l2_reg, validate_loss_val))
-                if validate_loss_val < min_loss:
-                    best_weights_val, best_biases_val = weights_val, biases_val
-                    min_loss = validate_loss_val
-                    best_l2_reg = l2_reg
-
-        else:
-            # Extract weights and biases of num_classes linear classifiers. Each column corresponds to a classifier.
-            best_weights_val, best_biases_val, loss_val = sess.run(
-                [weights, biases, loss], feed_dict={l2_reg_ph: l2_regs})
-            best_l2_reg, min_loss = l2_regs, None if not validate_set else loss_val
+            logging.info('l2_reg {} leads to rmse loss {}.'.format(l2_reg, validate_loss_val))
+            if validate_loss_val < min_loss:
+                best_weights_val, best_biases_val = weights_val, biases_val
+                min_loss = validate_loss_val
+                best_l2_reg = l2_reg
 
         sess.close()
 
