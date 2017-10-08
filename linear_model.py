@@ -223,7 +223,7 @@ class LinearClassifier(object):
             # Compute validation loss.
             num_validate_videos = validate_data.shape[0]
             split_indices = np.linspace(0, num_validate_videos + 1,
-                                        num=max(num_validate_videos // batch_size, 2),
+                                        num=max(num_validate_videos // batch_size + 1, 2),
                                         dtype=np.int32)
             loss_vals = []
             for i in range(len(split_indices) - 1):
@@ -621,8 +621,8 @@ class LogisticRegression(object):
 
                         # Compute validation loss.
                         num_validate_videos = validate_data.shape[0]
-                        split_indices = np.linspace(0, num_validate_videos + 1, max(
-                            num_validate_videos // (2 * batch_size), 2), dtype=np.int32)
+                        split_indices = np.linspace(0, num_validate_videos + 1, num=max(
+                            num_validate_videos // (2 * batch_size) + 1, 2), dtype=np.int32)
 
                         validate_loss_vals, predictions = [], []
                         for i in range(len(split_indices) - 1):

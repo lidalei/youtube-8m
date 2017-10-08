@@ -358,7 +358,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
             pred_obj = Predict(train_data_pipeline, model_dir, k=k)
             num_validate_videos = validate_data.shape[0]
             split_indices = np.linspace(0, num_validate_videos + 1,
-                                        max(num_validate_videos // batch_size, 2), dtype=np.int32)
+                                        num=max(num_validate_videos // batch_size + 1, 2), dtype=np.int32)
 
             validate_gaps = []
             for i in range(len(split_indices) - 1):
