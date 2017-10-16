@@ -15,17 +15,15 @@
 
 import time
 
-import eval_util
-import losses
-import frame_level_models
-import video_level_models
-import readers
 import tensorflow as tf
 from tensorflow import app
 from tensorflow import flags
 from tensorflow import gfile
 from tensorflow import logging
+
+import readers
 import utils
+from official import losses, frame_level_models, video_level_models, eval_util
 
 FLAGS = flags.FLAGS
 

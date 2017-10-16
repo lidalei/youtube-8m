@@ -37,8 +37,7 @@ aps = calculator.peek_map_at_n()
 ```
 """
 
-import numpy
-import average_precision_calculator
+from official import average_precision_calculator
 
 
 class MeanAveragePrecisionCalculator(object):

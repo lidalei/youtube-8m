@@ -3,17 +3,17 @@ The referenced paper is
 Zhang M L, Zhou Z H. ML-KNN: A lazy learning approach to multi-label learning[J].
 Pattern recognition, 2007, 40(7): 2038-2048.
 """
-import tensorflow as tf
-import numpy as np
-
-from readers import get_reader
-from tensorflow import flags, gfile, logging, app
-from inference import format_lines
-from utils import DataPipeline, get_input_data_tensors, random_sample
-from utils import save_prior_prob, save_posterior_prob, restore_prior_prob, restore_posterior_prob
-from eval_util import calculate_gap
-
 import time
+
+import numpy as np
+import tensorflow as tf
+from tensorflow import flags, gfile, logging, app
+
+from utils import gap_fn
+from readers import get_reader
+from utils import DataPipeline, get_input_data_tensors, random_sample
+from utils import format_lines
+from utils import save_prior_prob, save_posterior_prob, restore_prior_prob, restore_posterior_prob
 
 FLAGS = flags.FLAGS
 
@@ -366,7 +366,7 @@ def compute_prior_posterior_prob(k_list=[8], smooth_para=1.0, opt_hyper_para=Fal
                 end_ind = split_indices[i + 1]
                 ith_predictions = pred_obj.make_batch_predictions(None,
                                                                   validate_data[start_ind:end_ind])
-                ith_validate_gap = calculate_gap(ith_predictions, validate_labels[start_ind:end_ind])
+                ith_validate_gap = gap_fn(ith_predictions, validate_labels[start_ind:end_ind])
 
                 validate_gaps.append(ith_validate_gap * (end_ind - start_ind))
 

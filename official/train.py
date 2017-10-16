@@ -17,19 +17,16 @@ import json
 import os
 import time
 
-import eval_util
-import export_model
-import losses
-import frame_level_models
-import video_level_models
-import readers
 import tensorflow as tf
 import tensorflow.contrib.slim as slim
 from tensorflow import app
 from tensorflow import flags
 from tensorflow import gfile
 from tensorflow import logging
+
+import readers
 import utils
+from official import export_model, losses, frame_level_models, video_level_models, eval_util
 
 FLAGS = flags.FLAGS
 

@@ -13,11 +13,9 @@
 # limitations under the License.
 
 """Contains model definitions."""
-import math
 
-import models
+from official import models
 import tensorflow as tf
-import utils
 
 from tensorflow import flags
 import tensorflow.contrib.slim as slim

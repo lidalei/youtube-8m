@@ -8,23 +8,12 @@ import tensorflow as tf
 from tensorflow import logging, gfile, flags, app
 
 import numpy as np
-from utils import get_input_data_tensors, DataPipeline
+from utils import get_input_data_tensors, DataPipeline, format_lines
 from readers import get_reader
 
-from os.path import join as path_join
 import time
 
 FLAGS = flags.FLAGS
-
-
-def format_lines(video_ids, predictions, top_k=20):
-    batch_size = len(video_ids)
-    for video_index in range(batch_size):
-        top_indices = np.argpartition(predictions[video_index], -top_k)[-top_k:]
-        line = [(class_index, predictions[video_index][class_index])
-                for class_index in top_indices]
-        line = sorted(line, key=lambda p: -p[1])
-        yield video_ids[video_index].decode('utf-8') + "," + " ".join("%i %f" % pair for pair in line) + "\n"
 
 
 class BootstrapInference(object):
@@ -143,7 +132,7 @@ class BootstrapInference(object):
             out_file.close()
 
 
-def main(unsed_argv):
+def main(_):
     logging.set_verbosity(logging.INFO)
     # Where training checkpoints are stored.
     train_model_dirs = FLAGS.train_model_dirs

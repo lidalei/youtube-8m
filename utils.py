@@ -15,19 +15,19 @@
 """Contains a collection of util functions for training and evaluating.
 """
 
-import numpy as np
-import tensorflow as tf
-from tensorflow import logging, gfile
 import pickle
-from os.path import join as path_join
-from eval_util import calculate_gap
-
+from collections import namedtuple
 # Used to locate constants dir.
 from inspect import getsourcefile
 from os.path import abspath
 from os.path import dirname
+from os.path import join as path_join
 
-from collections import namedtuple
+import numpy as np
+import tensorflow as tf
+from tensorflow import logging, gfile
+
+from official.eval_util import calculate_gap
 
 
 def Dequantize(feat_vector, max_quantized_value=2, min_quantized_value=-2):
@@ -648,6 +648,16 @@ def gap_fn(predictions=None, labels=None):
     :return: GAP - global average precision.
     """
     return calculate_gap(predictions, labels)
+
+
+def format_lines(video_ids, predictions, top_k):
+    batch_size = len(video_ids)
+    for video_index in range(batch_size):
+        top_indices = np.argpartition(predictions[video_index], -top_k)[-top_k:]
+        line = [(class_index, predictions[video_index][class_index])
+                for class_index in top_indices]
+        line = sorted(line, key=lambda p: -p[1])
+        yield video_ids[video_index].decode('utf-8') + "," + " ".join("%i %f" % pair for pair in line) + "\n"
 """
 if __name__ == '__main__':
     # features_mean = partial_data_features_mean()
