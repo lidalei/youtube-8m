@@ -11,3 +11,6 @@
 * Finally, the implementations can be easily adapted to other large datasets.
 ## Presentation
 See [presentation.pdf](../master/presentation.pdf)
+
+## Paper
+See [http://oa.upm.es/55867/](http://oa.upm.es/55867/)
